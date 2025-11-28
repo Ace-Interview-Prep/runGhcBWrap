@@ -15,5 +15,5 @@ library
     , filepath
     , temporary
     , process
-  other-modules:
+  exposed-modules:
         RunGhcBWrap
