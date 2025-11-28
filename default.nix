@@ -37,20 +37,3 @@ mkDerivation {
   description = "Typified Tailwind for Rapid Development";
   license = lib.licenses.mit;
 }
-#{ pkgs }: pkgs.haskellPackages.callCabal2nix "runGhcBWrap" ./. {}
-
-# { mkDerivation, base, lib, pkgs }:
-# let
-#   base = pkgs.haskellPackages.callCabal2nix "runGhcBWrap" ./. {};
-# in
-# base
-
-
-# mkDerivation {
-#   pname = "runGhcBWrap";
-#   version = "0.1.0.0";
-#   src = ./.;
-#   libraryHaskellDepends = [ base ];
-#   doHaddock = false;
-#   license = lib.licenses.bsd3;
-# }
