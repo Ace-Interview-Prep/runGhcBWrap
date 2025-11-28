@@ -1,0 +1,19 @@
+--cabal-version: 3.10
+cabal-version: >= 1.8
+name: runGhcBWrap
+version: 0.1.0.0
+--license: BSD-3-Clause
+build-type: Simple
+
+library
+  hs-source-dirs: src
+  build-depends:
+      base
+    , text
+    , which
+    , directory
+    , filepath
+    , temporary
+    , process
+  other-modules:
+        RunGhcBWrap

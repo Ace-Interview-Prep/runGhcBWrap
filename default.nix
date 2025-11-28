@@ -1,33 +1,56 @@
-# default.nix
+{ mkDerivation, base, data-default, lens, lib, template-haskell, which
+, text, directory, filepath, temporary, process
+, pkgs
+}:
 let
-  nixpkgs = fetchTarball {
-    url = "https://github.com/NixOS/nixpkgs/archive/refs/tags/23.11.tar.gz";
-    sha256 = "sha256:1ndiv385w1qyb3b18vw13991fzb9wg4cl21wglk89grsfsnra41k";
-  };
-
-  pkgs = import nixpkgs {
-    config = {
-      allowUnfree = true;
-    };
-  };
-
-  haskellPackages = pkgs.haskell.packages.ghc962.override {
-    overrides = self: super: {
-      # Add any custom overrides here if needed
-    };
-  };
-
-  server = haskellPackages.callCabal2nix "server" ./. {};
+  pkgs_unstable = import (builtins.fetchTarball {
+    url = "https://github.com/NixOS/nixpkgs/archive/e6f23dc08d3624daab7094b701aa3954923c6bbb.tar.gz";
+  }) {};
+  ghc_unstable = pkgs_unstable.haskell.packages.ghc912;
+  ghc_9_12 = ghc_unstable.ghcWithPackages (
+    hpkgs: with hpkgs; [
+      temporary vector aeson parsec
+    ]
+  );
 in
-  # Enable caching and build the derivation
-  pkgs.stdenv.mkDerivation {
-    name = "ace-runGHC-server";
-    src = ./.;
-    buildInputs = [ server pkgs.cachix pkgs.curl pkgs.jq ];
-    installPhase = ''
-      mkdir -p $out/bin
-      cp ${server}/bin/server $out/bin/server
-    '';
-    preferLocalBuild = true;
-    allowSubstitutes = true;
-  }
+mkDerivation {
+  pname = "runGhcBWrap";
+  version = "0.1.0.0";
+  src = ./.;
+  libraryHaskellDepends = [
+    base data-default lens template-haskell text which
+    directory filepath temporary process
+  ];
+  librarySystemDepends = [
+    pkgs.ffmpeg
+    ghc_9_12
+    pkgs.bubblewrap
+    pkgs_unstable.nixVersions.nix_2_29
+  ];
+  executableSystemDepends = [
+    pkgs.ffmpeg
+    ghc_9_12
+    pkgs.bubblewrap
+    pkgs_unstable.nixVersions.nix_2_29
+  ];
+  homepage = "https://github.com/augyg/ClasshSS";
+  description = "Typified Tailwind for Rapid Development";
+  license = lib.licenses.mit;
+}
+#{ pkgs }: pkgs.haskellPackages.callCabal2nix "runGhcBWrap" ./. {}
+
+# { mkDerivation, base, lib, pkgs }:
+# let
+#   base = pkgs.haskellPackages.callCabal2nix "runGhcBWrap" ./. {};
+# in
+# base
+
+
+# mkDerivation {
+#   pname = "runGhcBWrap";
+#   version = "0.1.0.0";
+#   src = ./.;
+#   libraryHaskellDepends = [ base ];
+#   doHaddock = false;
+#   license = lib.licenses.bsd3;
+# }

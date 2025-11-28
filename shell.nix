@@ -1,13 +1,11 @@
-# shell.nix
+{ nixpkgs ? import <nixpkgs> {}, compiler ? "default", doBenchmark ? false }:
 let
-  nixpkgs = fetchTarball {
-    url = "https://github.com/NixOS/nixpkgs/archive/refs/tags/23.11.tar.gz";
-    sha256 = "sha256:1ndiv385w1qyb3b18vw13991fzb9wg4cl21wglk89grsfsnra41k";
-  };
-  pkgs = import nixpkgs {};
-  haskellPackages = pkgs.haskell.packages.ghc962;
+  inherit (nixpkgs) pkgs;
+  f = import ./default.nix;
+  haskellPackages = if compiler == "default"
+                       then pkgs.haskellPackages
+                       else pkgs.haskell.packages.${compiler};
+  variant = if doBenchmark then pkgs.haskell.lib.doBenchmark else pkgs.lib.id;
+  drv = variant (haskellPackages.callPackage f {});
 in
-  haskellPackages.shellFor {
-    packages = p: [ (haskellPackages.callCabal2nix "server" ./. {}) ];
-    buildInputs = with pkgs; [ cabal-install haskellPackages.ghc ];
-  }
+if pkgs.lib.inNixShell then drv.env else drv
