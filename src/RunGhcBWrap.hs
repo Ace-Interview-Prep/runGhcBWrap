@@ -55,7 +55,7 @@ testRunGhcBWrap :: String -> IO ()
 testRunGhcBWrap script = do
   putStrLn $ "With runghc: " <> runghc912
   --print (runghc912, runghc, ghc, bubblewrap)
-  x <- runHaskellInSandbox script
+  x <- runHaskellInSandbox (script, "")
 
   case x of
     Left e -> do
@@ -86,19 +86,19 @@ splitOnBar s  =
 -- nix-shell -p "haskellPackages.ghcWithPackages (ps: [ ps.temporary ])" bubblewrap cabal-install --run "runghc TestBWrap.hs"
 
 -- | Run Haskell source code in a sandboxed environment
-runHaskellInSandbox :: String -> IO (Either SomeException (ExitCode, String, String))
-runHaskellInSandbox sourceCode = try $ do
+runHaskellInSandbox :: (String, String) -> IO (Either SomeException (ExitCode, String, String))
+runHaskellInSandbox (sourceCode, stdin) = try $ do
   withSystemTempDirectory "sandbox" $ \tmpDir -> do
     let projectDir = tmpDir </> "project"
     let tmpBindDir = tmpDir </> "tmp"
-
+    putStrLn $ "StdIn: " <> stdin
     createDirectoryIfMissing True projectDir
     createDirectoryIfMissing True tmpBindDir
     createDirectoryIfMissing True $ projectDir </> "src"
     let hsFile = projectDir </> "src" </> "Main.hs"
     writeFile hsFile sourceCode
     hostPath <- getEnv "PATH"
-    let bwrapCmd = P.proc bubblewrap
+    let bwrapCmd = P.proc bubblewrap $
           [ "--bind", projectDir, "/project"
           , "--bind", tmpBindDir, "/tmp"
           , "--dev", "/dev"
@@ -108,8 +108,8 @@ runHaskellInSandbox sourceCode = try $ do
           , "--setenv", "TMPDIR", "/tmp"
           , "--chdir", "/project"
           -- , "cabal", "build", "--offline"
-          , runghc912, "-f", ghc912, "src/Main.hs"
-          ]
+          , runghc912, "-f", ghc912, "src/Main.hs" --stdin
+          ] <> words stdin
     readCreateProcessWithExitCode bwrapCmd ""
 
 
