@@ -40,8 +40,8 @@ import System.Directory (createDirectoryIfMissing)
 
 import Control.Monad
 
-runghc = $(staticWhich "runghc")
-ghc = $(staticWhich "ghc")
+-- runghc = $(staticWhich "runghc")
+-- ghc = $(staticWhich "ghc")
 runghc912 = $(staticWhich "runghc-9.12.2")
 ghc912 = $(staticWhich "ghc-9.12.2")
 bubblewrap = $(staticWhich "bwrap")

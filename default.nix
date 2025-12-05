@@ -1,6 +1,5 @@
-{ mkDerivation, base, data-default, lens, lib, template-haskell, which
-, text, directory, filepath, temporary, process
-, pkgs
+{ pkgs, base, data-default, lens, lib, template-haskell, which
+, text, directory, filepath, temporary, process, mkDerivation
 }:
 let
   pkgs_unstable = import (builtins.fetchTarball {
@@ -22,16 +21,9 @@ mkDerivation {
     directory filepath temporary process
   ];
   librarySystemDepends = [
-    pkgs.ffmpeg
     ghc_9_12
     pkgs.bubblewrap
-    pkgs_unstable.nixVersions.nix_2_29
-  ];
-  executableSystemDepends = [
-    pkgs.ffmpeg
-    ghc_9_12
-    pkgs.bubblewrap
-    pkgs_unstable.nixVersions.nix_2_29
+    pkgs.nix
   ];
   homepage = "https://github.com/augyg/ClasshSS";
   description = "Typified Tailwind for Rapid Development";
