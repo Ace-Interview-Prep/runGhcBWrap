@@ -34,6 +34,7 @@ import System.Process as P --(readCreateProcessWithExitCode, proc)
 import System.IO.Temp (withSystemTempDirectory)
 import System.FilePath ((</>), takeDirectory)
 import System.Exit (ExitCode)
+import System.Timeout
 import Control.Exception (try, SomeException, displayException)
 import System.Environment (getEnv)
 import System.Directory (createDirectoryIfMissing)
@@ -84,6 +85,17 @@ splitOnBar s  =
 
 
 -- nix-shell -p "haskellPackages.ghcWithPackages (ps: [ ps.temporary ])" bubblewrap cabal-install --run "runghc TestBWrap.hs"
+
+-- | Run Haskell source code in a time-limited, sandboxed environment
+-- | TODO: benchmark user's code, stream edit (main = -> main')
+-- | and input (main = withTimer main') 
+runHaskellInTimedSandbox
+  :: Int
+  -- ^ Number of microseconds to allow
+  -> (String, String)
+  -> IO (Maybe (Either SomeException (ExitCode, String, String)))
+runHaskellInTimedSandbox timeAllowed inputs =
+  timeout timeAllowed $ runHaskellInSandbox inputs
 
 -- | Run Haskell source code in a sandboxed environment
 runHaskellInSandbox :: (String, String) -> IO (Either SomeException (ExitCode, String, String))
