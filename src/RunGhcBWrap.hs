@@ -47,7 +47,6 @@ import System.Timeout
 import Control.Exception (try, SomeException, displayException)
 import System.Environment (getEnv)
 import System.Directory (createDirectoryIfMissing, listDirectory)
-import Data.Aeson
 
 import Control.Monad
 
@@ -127,7 +126,6 @@ runHaskellFilesInSandbox (exe, stdin) = try $ do
   let sourceFiles = _library exe
   --let rawSourceFiles = fmap toRawSource sourceFiles
   let folders = takeDirectory . pathSegsToPath ".hs" . getPathSegments <$> (testModule : sourceFiles)
-  print $ encode exe
   withSystemTempDirectory "sandbox" $ \tmpDir -> do
     let tmpBindDir = tmpDir </> "tmp"
     createDirectoryIfMissing True tmpBindDir
