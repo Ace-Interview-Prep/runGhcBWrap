@@ -1,5 +1,5 @@
 { pkgs, base, data-default, lens, lib, template-haskell, which
-, text, directory, filepath, temporary, process, mkDerivation
+, text, directory, filepath, temporary, process, runGhcBWrap-core, mkDerivation
 }:
 let
   pkgs_unstable = import (builtins.fetchTarball {
@@ -18,7 +18,7 @@ mkDerivation {
   src = ./.;
   libraryHaskellDepends = [
     base data-default lens template-haskell text which
-    directory filepath temporary process
+    directory filepath temporary process runGhcBWrap-core
   ];
   librarySystemDepends = [
     ghc_9_12

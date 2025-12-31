@@ -13,7 +13,9 @@ library
     , which
     , directory
     , filepath
-    , temporary
     , process
+    , split
+    , temporary
+    , runGhcBWrap-core
   exposed-modules:
         RunGhcBWrap

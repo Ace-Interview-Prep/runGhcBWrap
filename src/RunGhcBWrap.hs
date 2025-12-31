@@ -1,7 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE LambdaCase #-}
 
 module RunGhcBWrap where
+
+
 
 -- import Network.Wai (Application, responseLBS, getRequestBodyChunk)
 -- import Network.HTTP.Types (status200, status500)
@@ -29,6 +32,12 @@ module RunGhcBWrap where
 -- import Unsafe.Coerce (unsafeCoerce)
 -- import Data.IORef (newIORef, readIORef, writeIORef)
 
+-- import LocatedModule
+import RunGhc.Executable
+import RunGhc.LocatedModule
+import RunGhc.Locate
+
+
 import System.Which
 import System.Process as P --(readCreateProcessWithExitCode, proc)
 import System.IO.Temp (withSystemTempDirectory)
@@ -37,7 +46,8 @@ import System.Exit (ExitCode)
 import System.Timeout
 import Control.Exception (try, SomeException, displayException)
 import System.Environment (getEnv)
-import System.Directory (createDirectoryIfMissing)
+import System.Directory (createDirectoryIfMissing, listDirectory)
+import Data.Aeson
 
 import Control.Monad
 
@@ -89,6 +99,18 @@ splitOnBar s  =
 -- | Run Haskell source code in a time-limited, sandboxed environment
 -- | TODO: benchmark user's code, stream edit (main = -> main')
 -- | and input (main = withTimer main') 
+-- runHaskellInTimedSandbox
+--   :: Int
+--   -- ^ Number of microseconds to allow
+--   -> (String, String)
+--   -> IO (Maybe (Either SomeException (ExitCode, String, String)))
+-- runHaskellFilesInTimedSandbox timeAllowed inputs =
+--   timeout timeAllowed $ runHaskellFilesInSandbox inputs
+
+
+-- | Run Haskell source code in a time-limited, sandboxed environment
+-- | TODO: benchmark user's code, stream edit (main = -> main')
+-- | and input (main = withTimer main') 
 runHaskellInTimedSandbox
   :: Int
   -- ^ Number of microseconds to allow
@@ -97,6 +119,47 @@ runHaskellInTimedSandbox
 runHaskellInTimedSandbox timeAllowed inputs =
   timeout timeAllowed $ runHaskellInSandbox inputs
 
+
+runHaskellFilesInSandbox
+  :: (Executable, String) -> IO (Either SomeException (ExitCode, String, String))
+runHaskellFilesInSandbox (exe, stdin) = try $ do
+  let testModule = _main exe
+  let sourceFiles = _library exe
+  --let rawSourceFiles = fmap toRawSource sourceFiles
+  let folders = takeDirectory . pathSegsToPath ".hs" . getPathSegments <$> (testModule : sourceFiles)
+  print $ encode exe
+  withSystemTempDirectory "sandbox" $ \tmpDir -> do
+    let tmpBindDir = tmpDir </> "tmp"
+    createDirectoryIfMissing True tmpBindDir
+    --- Make src folder
+    let projectDir = tmpDir </> "project"
+    let baseDir = projectDir --  </> "src"
+    let expectedMainFile = "Main.hs"
+    
+    putStrLn $ "StdIn: " <> stdin
+    forM_ folders $ \fldr -> do
+      createDirectoryIfMissing True (baseDir </> fldr)
+    writeLocatedFiles baseDir (_main exe : _library exe)
+
+    print =<< listDirectory projectDir
+    --print =<< listDirectory (projectDir </> "src")
+    hostPath <- getEnv "PATH"
+    let bwrapCmd = P.proc bubblewrap $
+          [ "--bind", projectDir, "/project"
+          , "--bind", tmpBindDir, "/tmp"
+          , "--dev", "/dev"
+          , "--proc", "/proc"
+          , "--ro-bind", "/nix/store", "/nix/store"
+          , "--setenv", "PATH", hostPath --takeDirectory runghc --hostPath
+          , "--setenv", "TMPDIR", "/tmp"
+          , "--chdir", "/project"
+          , runghc912, "-f", ghc912, expectedMainFile
+          ] <> words stdin
+    readCreateProcessWithExitCode bwrapCmd ""
+
+        
+
+        
 -- | Run Haskell source code in a sandboxed environment
 runHaskellInSandbox :: (String, String) -> IO (Either SomeException (ExitCode, String, String))
 runHaskellInSandbox (sourceCode, stdin) = try $ do
