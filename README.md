@@ -21,7 +21,7 @@ Try it out, enter a repl:
 
 ```bash
 cd runGhcBWrap
-nix-shell
+nix-shell test-shell.nix
 nix-shell -p cabal-install
 cabal repl
 ghc> :l Example.hs
