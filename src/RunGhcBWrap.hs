@@ -55,9 +55,14 @@ import Control.Monad
 runghc912 = $(staticWhich "runghc-9.12.2")
 ghc912 = $(staticWhich "ghc-9.12.2")
 bubblewrap = $(staticWhich "bwrap")
+ghcPkg912 = $(staticWhich "ghc-pkg-9.12.2")
+ghcPkg = $(staticWhich "ghc-pkg")
+
+nixShell = $(staticWhich "nix-shell")
+-- Current Result:
+--(ExitFailure 1,"","warning: '/nix' does not exist, so Nix will use '/homeless-shelter/.local/share/nix/root' as a chroot store\nerror: cannot figure out user name\n")
 
 
-nix = $(staticWhich "nix-shell")
 
 -- nix-shell -p "haskellPackages.ghcWithPackages (ps: with ps; [ temporary vector aeson ])" bubblewrap cabal-install which --run "runghc TestBWrap.hs" --pure
 
@@ -126,6 +131,10 @@ runHaskellFilesInSandbox (exe, stdin) = try $ do
   let sourceFiles = _library exe
   --let rawSourceFiles = fmap toRawSource sourceFiles
   let folders = takeDirectory . pathSegsToPath ".hs" . getPathSegments <$> (testModule : sourceFiles)
+
+  -- trim newline char
+  globalPkgDb <- fmap init $ readProcess ghc912 ["--print-global-package-db"] ""
+  
   withSystemTempDirectory "sandbox" $ \tmpDir -> do
     let tmpBindDir = tmpDir </> "tmp"
     createDirectoryIfMissing True tmpBindDir
@@ -138,7 +147,7 @@ runHaskellFilesInSandbox (exe, stdin) = try $ do
     forM_ folders $ \fldr -> do
       createDirectoryIfMissing True (baseDir </> fldr)
     writeLocatedFiles baseDir (_main exe : _library exe)
-
+    --error $ show (runghc912, ghcPkg)
     print =<< listDirectory projectDir
     --print =<< listDirectory (projectDir </> "src")
     hostPath <- getEnv "PATH"
@@ -150,12 +159,11 @@ runHaskellFilesInSandbox (exe, stdin) = try $ do
           , "--ro-bind", "/nix/store", "/nix/store"
           , "--setenv", "PATH", hostPath --takeDirectory runghc --hostPath
           , "--setenv", "TMPDIR", "/tmp"
+          , "--setenv", "GHC_PACKAGE_PATH", globalPkgDb  -- Add this!
           , "--chdir", "/project"
           , runghc912, "-f", ghc912, expectedMainFile
           ] <> words stdin
     readCreateProcessWithExitCode bwrapCmd ""
-
-        
 
         
 -- | Run Haskell source code in a sandboxed environment

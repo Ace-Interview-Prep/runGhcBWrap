@@ -14,28 +14,16 @@ let
   };
   n = import n_ {};
   sources = n.mapSubdirectories n.thunkSource ./thunks;
-  runGhcBWrap-core_ = pkgs.haskellPackages.callCabal2nix "runGhcBWrap-core" sources.runGhcBWrap-core {};
-  IStr_ = pkgs.haskellPackages.callCabal2nix "IStr" sources.IStr {};
-  scrappy-core_ = pkgs.haskellPackages.callCabal2nix "scrappy-core" sources.scrappy-core {};
-
-  ghc_unstable = pkgs_unstable.haskell.packages.ghc912;
-
   overrides_ = pre: post: {
     runGhcBWrap-core = post.callCabal2nix "runGhcBWrap-core" sources.runGhcBWrap-core {};
     IStr = pre.callCabal2nix "IStr" sources.IStr {};
     scrappy-core = pre.callCabal2nix "scrappy-core" sources.scrappy-core {};
-  };
-  
-  ghc_9_12 = (pkgs.haskell.packages.ghc912.override { overrides = overrides_; }).ghcWithPackages (
+  };  
+  ghc_9_12 = (pkgs_unstable.haskell.packages.ghc912.override { overrides = overrides_; }).ghcWithPackages (
     hpkgs: with hpkgs; [
       temporary vector aeson parsec hpkgs.runGhcBWrap-core hpkgs.IStr hpkgs.scrappy-core
     ]
   );
-  # ghc_9_12 = ghc_unstable.ghcWithPackages (
-  #   hpkgs: with hpkgs; [
-  #     temporary vector aeson parsec runGhcBWrap-core_ IStr_ scrappy-core_
-  #   ]
-  # );
 in
 mkDerivation {
   pname = "runGhcBWrap";
