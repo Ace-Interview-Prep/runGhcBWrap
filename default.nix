@@ -1,5 +1,8 @@
 { pkgs, base, data-default, lens, lib, template-haskell, which
 , text, directory, filepath, temporary, process, runGhcBWrap-core, mkDerivation
+, hackludeCabalSrc ? null
+  # optional library for if we want our coding challenges to have access to
+  # custom types and functions
 }:
 let
   pkgs_unstable = import (builtins.fetchTarball {
@@ -18,10 +21,12 @@ let
     runGhcBWrap-core = post.callCabal2nix "runGhcBWrap-core" sources.runGhcBWrap-core {};
     IStr = pre.callCabal2nix "IStr" sources.IStr {};
     scrappy-core = pre.callCabal2nix "scrappy-core" sources.scrappy-core {};
+    hacklude = pre.callCabal2nix "hacklude" hackludeCabalSrc {};
   };  
   ghc_9_12 = (pkgs_unstable.haskell.packages.ghc912.override { overrides = overrides_; }).ghcWithPackages (
     hpkgs: with hpkgs; [
       temporary vector aeson parsec hpkgs.runGhcBWrap-core hpkgs.IStr hpkgs.scrappy-core
+      (if hackludeCabalSrc == null then null else hpkgs.hacklude)
     ]
   );
 in
