@@ -28,7 +28,7 @@ let
     scrappy-core = pre.callCabal2nix "scrappy-core" sources.scrappy-core {};
   };
   
-  ghc_9_12 = (pkgs.haskell.packages.ghc912.override { overrides = overrides_; }).ghcWithPackages (
+  ghc_9_12 = (pkgs_unstable.haskell.packages.ghc912.override { overrides = overrides_; }).ghcWithPackages (
     hpkgs: with hpkgs; [
       temporary vector aeson parsec hpkgs.runGhcBWrap-core hpkgs.IStr hpkgs.scrappy-core
     ]
