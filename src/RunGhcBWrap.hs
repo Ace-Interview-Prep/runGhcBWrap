@@ -23,7 +23,7 @@ import System.FilePath ((</>), takeDirectory)
 import System.Exit (ExitCode(..))
 import System.Timeout
 import Control.Exception (try, SomeException, displayException)
-import System.Environment (getEnv)
+import System.Environment (getEnv, getEnvironment)
 import System.Directory (createDirectoryIfMissing, listDirectory, removeFile)
 
 import Control.Monad
@@ -197,7 +197,12 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
   -- We must set GHC_PACKAGE_PATH explicitly in bwrap because the parent
   -- env may have GHC_PACKAGE_PATH pointing to a nix build sandbox path
   -- (e.g. /build/tmp.xxx/) that isn't mounted inside bwrap.
-  pkgListOutput <- readProcess ghcPkg912 ["list"] ""
+  -- Clear GHC_PACKAGE_PATH before running ghc-pkg so it doesn't inherit
+  -- the parent env's GHC 8.10 package db (incompatible format with 9.12)
+  env <- getEnvironment
+  let env' = filter ((/= "GHC_PACKAGE_PATH") . fst) env
+  pkgListOutput <- readCreateProcess
+    (P.proc ghcPkg912 ["list"]) { env = Just env' } ""
   let pkgDbs = [line | line <- lines pkgListOutput, not (null line), head line == '/']
   let ghcPackagePath = intercalate ":" pkgDbs
 
