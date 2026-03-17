@@ -27,6 +27,7 @@ import System.Environment (getEnv)
 import System.Directory (createDirectoryIfMissing, listDirectory, removeFile)
 
 import Control.Monad
+import Data.List (intercalate)
 
 -- runghc = $(staticWhich "runghc")
 -- ghc = $(staticWhich "ghc")
@@ -191,6 +192,15 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
   let allModules = _main exe : untrusted ++ trusted
   let allFolders = takeDirectory . pathSegsToPath ".hs" . getPathSegments <$> allModules
 
+  -- Get the ghcWithPackages package db path. This is a single combined db
+  -- in /nix/store with all packages (aeson, runGhcBWrap-core, etc).
+  -- We must set GHC_PACKAGE_PATH explicitly in bwrap because the parent
+  -- env may have GHC_PACKAGE_PATH pointing to a nix build sandbox path
+  -- (e.g. /build/tmp.xxx/) that isn't mounted inside bwrap.
+  pkgListOutput <- readProcess ghcPkg912 ["list"] ""
+  let pkgDbs = [line | line <- lines pkgListOutput, not (null line), head line == '/']
+  let ghcPackagePath = intercalate ":" pkgDbs
+
   withSystemTempDirectory "sandbox" $ \tmpDir -> do
     let tmpBindDir = tmpDir </> "tmp"
     createDirectoryIfMissing True tmpBindDir
@@ -198,9 +208,6 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
     let baseDir = projectDir
     hostPath <- getEnv "PATH"
 
-    -- No GHC_PACKAGE_PATH here — the ghcWithPackages wrapper already
-    -- knows its package dbs (aeson, runGhcBWrap-core, etc).
-    -- Setting GHC_PACKAGE_PATH would override the wrapper's config.
     let sandboxArgs =
           [ "--bind", projectDir, "/project"
           , "--bind", tmpBindDir, "/tmp"
@@ -209,6 +216,7 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
           , "--ro-bind", "/nix/store", "/nix/store"
           , "--setenv", "PATH", hostPath
           , "--setenv", "TMPDIR", "/tmp"
+          , "--setenv", "GHC_PACKAGE_PATH", ghcPackagePath
           , "--chdir", "/project"
           ]
 
