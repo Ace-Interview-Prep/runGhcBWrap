@@ -1,6 +1,7 @@
 { pkgs, base, data-default, lens, lib, template-haskell, which
 , text, directory, filepath, temporary, process, runGhcBWrap-core
 , tasty, tasty-hunit, mkDerivation
+, hackludeCabalSrc ? null
 }:
 let
   pkgs_unstable = import (builtins.fetchTarball {
