@@ -2,51 +2,29 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE LambdaCase #-}
 
-module RunGhcBWrap where
+module RunGhcBWrap
+  ( runHaskellFilesInSandbox
+  , runSandboxedExecutable
+  , runHaskellInSandbox
+  , runHaskellInTimedSandbox
+  , testRunGhcBWrap
+  , splitOnNewline
+  , splitOnBar
+  ) where
 
-
-
--- import Network.Wai (Application, responseLBS, getRequestBodyChunk)
--- import Network.HTTP.Types (status200, status500)
--- import Network.Wai.Handler.Warp (run)
--- import Data.Text (Text, unpack)
--- import qualified Data.Text as T
--- import qualified Data.Text.Encoding as TE
--- import qualified Data.ByteString.Lazy as LBS
--- import GHC (Ghc, runGhc, guessTarget, setTargets, targetContents, getSessionDynFlags, setSessionDynFlags, load, LoadHowMuch(..), setContext, compileExpr, simpleImportDecl, mkModuleName, InteractiveImport(IIDecl), Target, HValue)
--- import GHC.Paths (libdir)
--- import GHC.Driver.Session (DynFlags(..), GhcLink(..), parseDynamicFlagsCmdLine)
--- import GHC.Driver.Backend (interpreterBackend)
--- import GHC.Data.StringBuffer (stringToStringBuffer)
--- import GHC.Utils.Panic (GhcException (..), throwGhcExceptionIO)
--- import GHC.Types.Basic
--- import GHC.Types.SrcLoc (noLoc)
--- import Data.Time (getCurrentTime)
--- import Control.Monad (when)
--- import Control.Monad.IO.Class (liftIO)
--- import Control.Exception (try, SomeException, throwIO)
--- import System.IO.Unsafe (unsafePerformIO)
--- import System.IO (hPutStrLn, stdout, stderr)
--- import System.IO.Error (userError)
--- import System.IO.Silently (hCapture)
--- import Unsafe.Coerce (unsafeCoerce)
--- import Data.IORef (newIORef, readIORef, writeIORef)
-
--- import LocatedModule
 import RunGhc.Executable
 import RunGhc.LocatedModule
 import RunGhc.Locate
 
-
 import System.Which
-import System.Process as P --(readCreateProcessWithExitCode, proc)
+import System.Process as P
 import System.IO.Temp (withSystemTempDirectory)
 import System.FilePath ((</>), takeDirectory)
-import System.Exit (ExitCode)
+import System.Exit (ExitCode(..))
 import System.Timeout
 import Control.Exception (try, SomeException, displayException)
 import System.Environment (getEnv)
-import System.Directory (createDirectoryIfMissing, listDirectory)
+import System.Directory (createDirectoryIfMissing, removeFile)
 
 import Control.Monad
 
@@ -55,14 +33,9 @@ import Control.Monad
 runghc912 = $(staticWhich "runghc-9.12.2")
 ghc912 = $(staticWhich "ghc-9.12.2")
 bubblewrap = $(staticWhich "bwrap")
-ghcPkg912 = $(staticWhich "ghc-pkg-9.12.2")
-ghcPkg = $(staticWhich "ghc-pkg")
-
-nixShell = $(staticWhich "nix-shell")
--- Current Result:
---(ExitFailure 1,"","warning: '/nix' does not exist, so Nix will use '/homeless-shelter/.local/share/nix/root' as a chroot store\nerror: cannot figure out user name\n")
 
 
+nix = $(staticWhich "nix-shell")
 
 -- nix-shell -p "haskellPackages.ghcWithPackages (ps: with ps; [ temporary vector aeson ])" bubblewrap cabal-install which --run "runghc TestBWrap.hs" --pure
 
@@ -124,245 +97,153 @@ runHaskellInTimedSandbox timeAllowed inputs =
   timeout timeAllowed $ runHaskellInSandbox inputs
 
 
+-- | Common bwrap sandbox arguments
+bwrapBaseArgs :: FilePath -> FilePath -> String -> [String]
+bwrapBaseArgs projectDir tmpBindDir hostPath =
+  [ "--bind", projectDir, "/project"
+  , "--bind", tmpBindDir, "/tmp"
+  , "--dev", "/dev"
+  , "--proc", "/proc"
+  , "--ro-bind", "/nix/store", "/nix/store"
+  , "--setenv", "PATH", hostPath
+  , "--setenv", "TMPDIR", "/tmp"
+  , "--chdir", "/project"
+  ]
+
+-- | Compile a single .hs file with ghc -c inside bwrap
+bwrapGhcCompile :: FilePath -> FilePath -> String -> FilePath -> IO (ExitCode, String, String)
+bwrapGhcCompile projectDir tmpBindDir hostPath hsPath =
+  readCreateProcessWithExitCode
+    (P.proc bubblewrap $ bwrapBaseArgs projectDir tmpBindDir hostPath
+      ++ [ghc912, "-c", hsPath])
+    ""
+
+-- | Link .o files into an executable inside bwrap
+bwrapGhcLink :: FilePath -> FilePath -> String -> [FilePath] -> FilePath -> IO (ExitCode, String, String)
+bwrapGhcLink projectDir tmpBindDir hostPath oFiles outputName =
+  readCreateProcessWithExitCode
+    (P.proc bubblewrap $ bwrapBaseArgs projectDir tmpBindDir hostPath
+      ++ [ghc912] ++ oFiles ++ ["-o", outputName])
+    ""
+
+-- | Run a compiled binary inside bwrap
+bwrapRunBinary :: FilePath -> FilePath -> String -> FilePath -> String -> IO (ExitCode, String, String)
+bwrapRunBinary projectDir tmpBindDir hostPath binaryPath stdinStr =
+  readCreateProcessWithExitCode
+    (P.proc bubblewrap $ bwrapBaseArgs projectDir tmpBindDir hostPath
+      ++ [binaryPath])
+    stdinStr
+
+-- | Run an Executable in a sandboxed environment.
+-- No TH isolation — all modules are compiled together.
+-- Use 'runSandboxedExecutable' for untrusted code.
 runHaskellFilesInSandbox
   :: (Executable, String) -> IO (Either SomeException (ExitCode, String, String))
-runHaskellFilesInSandbox (exe, stdin) = try $ do
-  let testModule = _main exe
-  let sourceFiles = _library exe
-  --let rawSourceFiles = fmap toRawSource sourceFiles
-  let folders = takeDirectory . pathSegsToPath ".hs" . getPathSegments <$> (testModule : sourceFiles)
-
-  -- trim newline char
-  globalPkgDb <- fmap init $ readProcess ghc912 ["--print-global-package-db"] ""
-  
+runHaskellFilesInSandbox (exe, stdinStr) = try $ do
+  let allModules = _main exe : _library exe
+  let allFolders = takeDirectory . pathSegsToPath ".hs" . getPathSegments <$> allModules
   withSystemTempDirectory "sandbox" $ \tmpDir -> do
     let tmpBindDir = tmpDir </> "tmp"
     createDirectoryIfMissing True tmpBindDir
-    --- Make src folder
     let projectDir = tmpDir </> "project"
-    let baseDir = projectDir --  </> "src"
-    let expectedMainFile = "Main.hs"
-    
-    putStrLn $ "StdIn: " <> stdin
-    forM_ folders $ \fldr -> do
-      createDirectoryIfMissing True (baseDir </> fldr)
-    writeLocatedFiles baseDir (_main exe : _library exe)
-    --error $ show (runghc912, ghcPkg)
-    print =<< listDirectory projectDir
-    --print =<< listDirectory (projectDir </> "src")
+    let baseDir = projectDir
     hostPath <- getEnv "PATH"
-    let bwrapCmd = P.proc bubblewrap $
-          [ "--bind", projectDir, "/project"
-          , "--bind", tmpBindDir, "/tmp"
-          , "--dev", "/dev"
-          , "--proc", "/proc"
-          , "--ro-bind", "/nix/store", "/nix/store"
-          , "--setenv", "PATH", hostPath --takeDirectory runghc --hostPath
-          , "--setenv", "TMPDIR", "/tmp"
-          , "--setenv", "GHC_PACKAGE_PATH", globalPkgDb  -- Add this!
-          , "--chdir", "/project"
-          , runghc912, "-f", ghc912, expectedMainFile
-          ] <> words stdin
-    readCreateProcessWithExitCode bwrapCmd ""
 
-        
--- | Run Haskell source code in a sandboxed environment
+    forM_ allFolders $ \fldr ->
+      createDirectoryIfMissing True (baseDir </> fldr)
+    writeLocatedFiles baseDir allModules
+
+    -- Compile library modules first, then Main
+    forM_ (_library exe ++ [_main exe]) $ \m -> do
+      let hsPath = pathSegsToPath ".hs" (getPathSegments m)
+      (ec, _, err) <- bwrapGhcCompile projectDir tmpBindDir hostPath hsPath
+      when (ec /= ExitSuccess) $
+        fail $ "Compilation failed for " ++ hsPath ++ ": " ++ err
+
+    -- Link
+    let allOFiles = [ pathSegsToPath ".o" (getPathSegments m) | m <- allModules ]
+    (ec, _, err) <- bwrapGhcLink projectDir tmpBindDir hostPath allOFiles "Main"
+    when (ec /= ExitSuccess) $
+      fail $ "Linking failed: " ++ err
+
+    -- Run
+    bwrapRunBinary projectDir tmpBindDir hostPath "./Main" stdinStr
+
+-- | Run a SandboxedExecutable with two-phase compilation to prevent
+-- Template Haskell sandbox escapes.
+--
+-- Phase 1: Compile untrusted (user) modules in isolation — TH runs here
+--          but no secret/trusted files exist yet
+-- Phase 2: Write trusted modules + Main
+-- Phase 3: Compile trusted modules + link + run
+runSandboxedExecutable
+  :: (SandboxedExecutable, String) -> IO (Either SomeException (ExitCode, String, String))
+runSandboxedExecutable (sandboxed, stdinStr) = try $ do
+  let exe = _sandboxedExe sandboxed
+  let untrusted = _untrustedModules sandboxed
+  let trusted = _library exe
+  let allModules = _main exe : untrusted ++ trusted
+  let allFolders = takeDirectory . pathSegsToPath ".hs" . getPathSegments <$> allModules
+  withSystemTempDirectory "sandbox" $ \tmpDir -> do
+    let tmpBindDir = tmpDir </> "tmp"
+    createDirectoryIfMissing True tmpBindDir
+    let projectDir = tmpDir </> "project"
+    let baseDir = projectDir
+    hostPath <- getEnv "PATH"
+
+    -- Create directory structure for all modules upfront
+    forM_ allFolders $ \fldr ->
+      createDirectoryIfMissing True (baseDir </> fldr)
+
+    -- Phase 1: Write and compile untrusted modules in isolation
+    -- TH splices run here but there are no secret files to read
+    writeLocatedFiles baseDir untrusted
+    forM_ untrusted $ \m -> do
+      let hsPath = pathSegsToPath ".hs" (getPathSegments m)
+      (ec, _, err) <- bwrapGhcCompile projectDir tmpBindDir hostPath hsPath
+      -- Delete source after compilation, keep .o/.hi
+      removeFile (baseDir </> hsPath)
+      when (ec /= ExitSuccess) $
+        fail $ "Phase 1 compilation failed for " ++ hsPath ++ ": " ++ err
+
+    -- Phase 2: Write trusted modules + Main
+    writeLocatedFiles baseDir [_main exe]
+    writeLocatedFiles baseDir trusted
+
+    -- Phase 3: Compile trusted modules first, then Main (one-shot, finds untrusted .hi)
+    forM_ (trusted ++ [_main exe]) $ \m -> do
+      let hsPath = pathSegsToPath ".hs" (getPathSegments m)
+      (ec, _, err) <- bwrapGhcCompile projectDir tmpBindDir hostPath hsPath
+      when (ec /= ExitSuccess) $
+        fail $ "Phase 3 compilation failed for " ++ hsPath ++ ": " ++ err
+
+    -- Phase 4: Link all .o files into binary
+    let allOFiles = [ pathSegsToPath ".o" (getPathSegments m) | m <- allModules ]
+    (ec, _, err) <- bwrapGhcLink projectDir tmpBindDir hostPath allOFiles "Main"
+    when (ec /= ExitSuccess) $
+      fail $ "Linking failed: " ++ err
+
+    -- Phase 5: Run the binary
+    bwrapRunBinary projectDir tmpBindDir hostPath "./Main" stdinStr
+
+-- | Run Haskell source code in a sandboxed environment (single source string)
 runHaskellInSandbox :: (String, String) -> IO (Either SomeException (ExitCode, String, String))
-runHaskellInSandbox (sourceCode, stdin) = try $ do
+runHaskellInSandbox (sourceCode, stdinStr) = try $ do
   withSystemTempDirectory "sandbox" $ \tmpDir -> do
     let projectDir = tmpDir </> "project"
     let tmpBindDir = tmpDir </> "tmp"
-    putStrLn $ "StdIn: " <> stdin
     createDirectoryIfMissing True projectDir
     createDirectoryIfMissing True tmpBindDir
-    createDirectoryIfMissing True $ projectDir </> "src"
-    let hsFile = projectDir </> "src" </> "Main.hs"
+    let hsFile = projectDir </> "Main.hs"
     writeFile hsFile sourceCode
     hostPath <- getEnv "PATH"
-    let bwrapCmd = P.proc bubblewrap $
-          [ "--bind", projectDir, "/project"
-          , "--bind", tmpBindDir, "/tmp"
-          , "--dev", "/dev"
-          , "--proc", "/proc"
-          , "--ro-bind", "/nix/store", "/nix/store"
-          , "--setenv", "PATH", hostPath --takeDirectory runghc --hostPath
-          , "--setenv", "TMPDIR", "/tmp"
-          , "--chdir", "/project"
-          -- , "cabal", "build", "--offline"
-          , runghc912, "-f", ghc912, "src/Main.hs" --stdin
-          ] <> words stdin
-    readCreateProcessWithExitCode bwrapCmd ""
-
-
-
--- --------------------------------------------------------------------------------
--- -- Server entrypoint
--- --------------------------------------------------------------------------------
-
--- main :: IO ()
--- main = do
---   putStrLn "Starting server on port 8080..."
---   run 8080 app
-
-
--- --------------------------------------------------------------------------------
--- -- WAI Application: accepts code via POST body and returns output or error
--- --------------------------------------------------------------------------------
-
--- app :: Application
--- app req respond = do
---   -- Read POST body (single chunk)
---   body <- getRequestBodyChunk req
---   let code = TE.decodeUtf8 body
-
---   -- Run the Haskell code through GHC API
---   result <- runHaskellCode code
-
---   -- Respond with either output or error text
---   respond $ case result of
---     Right output -> responseLBS status200 [("Content-Type", "text/plain")]
---                       (LBS.fromStrict $ TE.encodeUtf8 output)
---     Left err     -> responseLBS status500 [("Content-Type", "text/plain")]
---                       (LBS.fromStrict $ TE.encodeUtf8 err)
-
-
--- --------------------------------------------------------------------------------
--- -- Wrap user code in a synthetic module that defines `main`
--- -- This lets us compile it as a real file with GHC API
--- --------------------------------------------------------------------------------
-
--- runDynamicCodeTemplate :: Text -> Text
--- runDynamicCodeTemplate codeText =
---   T.unlines
---     [ "module DynamicCode where"
---     , "import System.IO (hFlush, stdout)"
---     , "import Data.Time.Clock (UTCTime(..), getCurrentTime)"
---     , "main :: IO ()"
---     , "main = do"
---     , "  " <> codeText            -- user code injected here
---     , "  hFlush stdout"          -- ensure buffered output is flushed
---     , "  pure ()"
---     ]
-
-
--- --------------------------------------------------------------------------------
--- -- Configure a fresh GHC session for *each* request
--- -- This installs package flags, uses in-memory linking, and provides source text
--- --------------------------------------------------------------------------------
-
--- setupGhcSession :: String -> Ghc Target
--- setupGhcSession codeStr = do
---   -- Package arguments to enable inside dynamic interpreter GHC
---   -- These must exist in the GHC package DB used at runtime
---   let pkgArgs =
---         [ "-package", "time" ]
---         -- Add more packages here if they exist in your environment
-
---   -- Get the initial DynFlags from the session
---   dflags <- getSessionDynFlags
-
---   -- Apply package flags like: -package time, etc.
---   (pflags, _, _) <- parseDynamicFlagsCmdLine dflags (map noLoc pkgArgs)
-
---   -- Reconfigure DynFlags to use the bytecode interpreter
---   let dflags' =
---         pflags { ghcLink = LinkInMemory
---                , backend = interpreterBackend
---                }
-
---   -- Install updated DynFlags into session
---   _ <- setSessionDynFlags dflags'
-
---   -- Create a synthetic "DynamicCode.hs" target containing our provided source
---   target <- guessTarget "DynamicCode.hs" Nothing Nothing
---   now <- liftIO getCurrentTime
---   let target' =
---         target { targetContents = Just (stringToStringBuffer codeStr, now) }
-
---   pure target'
-
-
--- --------------------------------------------------------------------------------
--- -- Load the in-memory module and fail out on error
--- --------------------------------------------------------------------------------
-
--- loadModule :: Target -> Ghc ()
--- loadModule target = do
---   setTargets [target]
---   result <- load LoadAllTargets
---   when (isFailed result) $
---     liftIO $ throwIO (userError "Failed to load DynamicCode module!")
-
-
--- --------------------------------------------------------------------------------
--- -- Compile the expression "DynamicCode.main :: IO ()" and return as HValue
--- --------------------------------------------------------------------------------
-
--- compileMain :: Ghc HValue
--- compileMain = do
---   -- Make Prelude and the synthetic module available for evaluation
---   setContext
---     [ IIDecl $ simpleImportDecl (mkModuleName "Prelude")
---     , IIDecl $ simpleImportDecl (mkModuleName "DynamicCode")
---     ]
-
---   -- Compile the main function into an HValue (runtime value)
---   compileExpr "DynamicCode.main :: IO ()"
-
-
--- --------------------------------------------------------------------------------
--- -- Execute the runtime IO value, capturing stdout
--- --------------------------------------------------------------------------------
-
--- captureOutput :: HValue -> IO String
--- captureOutput hval = do
---   -- Unsafe coercion because GHC API returns HValue instead of typed value
---   let ioAction = unsafeCoerce hval :: IO ()
-
---   -- Capture stdout while running the user code
---   (output, ()) <- hCapture [stdout] ioAction
---   pure output
-
-
--- --------------------------------------------------------------------------------
--- -- Wrap result into Text-based error/success responses
--- --------------------------------------------------------------------------------
-
--- handleResult :: Either SomeException String -> IO (Either Text Text)
--- handleResult result =
---   case result of
---     Left err -> do
---       hPutStrLn stderr $ "Error: " ++ show err
---       pure $ Left $ "Error: " <> T.pack (show err)
-
---     Right output ->
---       pure $ Right $ T.pack output
-
-
--- --------------------------------------------------------------------------------
--- -- Top-level: wrap user code, run it through GHC API, execute it
--- --------------------------------------------------------------------------------
-
--- runHaskellCode :: Text -> IO (Either Text Text)
--- runHaskellCode codeText = do
---   -- Build synthetic module source text
---   let wrappedCode = runDynamicCodeTemplate codeText
---       codeStr     = unpack wrappedCode
-
---   -- Safely run the whole GHC process with error capture
---   result <- try $ runGhc (Just libdir) $ do
---     target <- setupGhcSession codeStr
---     _      <- loadModule target
---     hval   <- compileMain
---     liftIO $ captureOutput hval
-
---   handleResult result
-
-
--- --------------------------------------------------------------------------------
--- -- Helper to unwrap GHC SuccessFlag
--- --------------------------------------------------------------------------------
-
--- isFailed :: SuccessFlag -> Bool
--- isFailed Failed = True
--- isFailed _      = False
+    -- Compile
+    (ec, _, err) <- bwrapGhcCompile projectDir tmpBindDir hostPath "Main.hs"
+    when (ec /= ExitSuccess) $
+      fail $ "Compilation failed: " ++ err
+    -- Link
+    (ec2, _, err2) <- bwrapGhcLink projectDir tmpBindDir hostPath ["Main.o"] "Main"
+    when (ec2 /= ExitSuccess) $
+      fail $ "Linking failed: " ++ err2
+    -- Run
+    bwrapRunBinary projectDir tmpBindDir hostPath "./Main" stdinStr
