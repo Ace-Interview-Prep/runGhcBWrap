@@ -9,7 +9,7 @@ let
   };
   n = import n_ {};
   sources = n.mapSubdirectories n.thunkSource ./thunks;
-  runGhcBWrap-core_ = pkgs.haskellPackages.callCabal2nix "runGhcBWrap-core" sources.runGhcBWrap-core {};
+  runGhcBWrap-core_ = pkgs.haskell.lib.doJailbreak (pkgs.haskellPackages.callCabal2nix "runGhcBWrap-core" ../runGhcBWrap-core {});
   IStr_ = pkgs.haskellPackages.callCabal2nix "IStr" sources.IStr {};
   scrappy-core_ = pkgs.haskellPackages.callCabal2nix "scrappy-core" sources.scrappy-core {};
   
@@ -22,7 +22,7 @@ let
   # Override the package set to include runGhcBWrap-core
   haskellPackages = haskellPackages'.override {
     overrides = self: super: {
-      runGhcBWrap-core = super.callCabal2nix "runGhcBWrap-core" sources.runGhcBWrap-core {};
+      runGhcBWrap-core = pkgs.haskell.lib.doJailbreak (super.callCabal2nix "runGhcBWrap-core" ../runGhcBWrap-core {});
       IStr = IStr_;
       scrappy-core = scrappy-core_;
     };

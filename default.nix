@@ -1,8 +1,6 @@
 { pkgs, base, data-default, lens, lib, template-haskell, which
-, text, directory, filepath, temporary, process, runGhcBWrap-core, mkDerivation
-, hackludeCabalSrc ? null
-  # optional library for if we want our coding challenges to have access to
-  # custom types and functions
+, text, directory, filepath, temporary, process, runGhcBWrap-core
+, tasty, tasty-hunit, mkDerivation
 }:
 let
   pkgs_unstable = import (builtins.fetchTarball {
@@ -17,18 +15,28 @@ let
   };
   n = import n_ {};
   sources = n.mapSubdirectories n.thunkSource ./thunks;
+  runGhcBWrap-core_ = pkgs.haskell.lib.doJailbreak (pkgs.haskellPackages.callCabal2nix "runGhcBWrap-core" ../runGhcBWrap-core {});
+  IStr_ = pkgs.haskellPackages.callCabal2nix "IStr" sources.IStr {};
+  scrappy-core_ = pkgs.haskellPackages.callCabal2nix "scrappy-core" sources.scrappy-core {};
+
+  ghc_unstable = pkgs_unstable.haskell.packages.ghc912;
+
   overrides_ = pre: post: {
-    runGhcBWrap-core = post.callCabal2nix "runGhcBWrap-core" sources.runGhcBWrap-core {};
+    runGhcBWrap-core = pkgs.haskell.lib.doJailbreak (post.callCabal2nix "runGhcBWrap-core" ../runGhcBWrap-core {});
     IStr = pre.callCabal2nix "IStr" sources.IStr {};
     scrappy-core = pre.callCabal2nix "scrappy-core" sources.scrappy-core {};
-    hacklude = pre.callCabal2nix "hacklude" hackludeCabalSrc {};
-  };  
-  ghc_9_12 = (pkgs_unstable.haskell.packages.ghc912.override { overrides = overrides_; }).ghcWithPackages (
+  };
+  
+  ghc_9_12 = (pkgs.haskell.packages.ghc912.override { overrides = overrides_; }).ghcWithPackages (
     hpkgs: with hpkgs; [
       temporary vector aeson parsec hpkgs.runGhcBWrap-core hpkgs.IStr hpkgs.scrappy-core
-      (if hackludeCabalSrc == null then null else hpkgs.hacklude)
     ]
   );
+  # ghc_9_12 = ghc_unstable.ghcWithPackages (
+  #   hpkgs: with hpkgs; [
+  #     temporary vector aeson parsec runGhcBWrap-core_ IStr_ scrappy-core_
+  #   ]
+  # );
 in
 mkDerivation {
   pname = "runGhcBWrap";
@@ -38,6 +46,10 @@ mkDerivation {
     base data-default lens template-haskell text which
     directory filepath temporary process runGhcBWrap-core
   ];
+  testHaskellDepends = [
+    tasty tasty-hunit text runGhcBWrap-core
+  ];
+  buildTools = [ pkgs.cabal-install ];
   librarySystemDepends = [
     ghc_9_12
     pkgs.bubblewrap
