@@ -191,15 +191,26 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
   let allModules = _main exe : untrusted ++ trusted
   let allFolders = takeDirectory . pathSegsToPath ".hs" . getPathSegments <$> allModules
 
-  -- trim newline char
-  globalPkgDb <- fmap init $ readProcess ghc912 ["--print-global-package-db"] ""
-
   withSystemTempDirectory "sandbox" $ \tmpDir -> do
     let tmpBindDir = tmpDir </> "tmp"
     createDirectoryIfMissing True tmpBindDir
     let projectDir = tmpDir </> "project"
     let baseDir = projectDir
     hostPath <- getEnv "PATH"
+
+    -- No GHC_PACKAGE_PATH here — the ghcWithPackages wrapper already
+    -- knows its package dbs (aeson, runGhcBWrap-core, etc).
+    -- Setting GHC_PACKAGE_PATH would override the wrapper's config.
+    let sandboxArgs =
+          [ "--bind", projectDir, "/project"
+          , "--bind", tmpBindDir, "/tmp"
+          , "--dev", "/dev"
+          , "--proc", "/proc"
+          , "--ro-bind", "/nix/store", "/nix/store"
+          , "--setenv", "PATH", hostPath
+          , "--setenv", "TMPDIR", "/tmp"
+          , "--chdir", "/project"
+          ]
 
     -- Create directory structure for all modules upfront
     forM_ allFolders $ \fldr ->
@@ -210,7 +221,8 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
     writeLocatedFiles baseDir untrusted
     forM_ untrusted $ \m -> do
       let hsPath = pathSegsToPath ".hs" (getPathSegments m)
-      (ec, _, err) <- bwrapGhcCompile projectDir tmpBindDir hostPath globalPkgDb hsPath
+      (ec, _, err) <- readCreateProcessWithExitCode
+        (P.proc bubblewrap $ sandboxArgs ++ [ghc912, "-c", hsPath]) ""
       -- Delete source after compilation, keep .o/.hi
       removeFile (baseDir </> hsPath)
       when (ec /= ExitSuccess) $
@@ -223,18 +235,21 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
     -- Phase 3: Compile trusted modules first, then Main (one-shot, finds untrusted .hi)
     forM_ (trusted ++ [_main exe]) $ \m -> do
       let hsPath = pathSegsToPath ".hs" (getPathSegments m)
-      (ec, _, err) <- bwrapGhcCompile projectDir tmpBindDir hostPath globalPkgDb hsPath
+      (ec, _, err) <- readCreateProcessWithExitCode
+        (P.proc bubblewrap $ sandboxArgs ++ [ghc912, "-c", hsPath]) ""
       when (ec /= ExitSuccess) $
         fail $ "Phase 3 compilation failed for " ++ hsPath ++ ": " ++ err
 
     -- Phase 4: Link all .o files into binary
     let allOFiles = [ pathSegsToPath ".o" (getPathSegments m) | m <- allModules ]
-    (ec, _, err) <- bwrapGhcLink projectDir tmpBindDir hostPath globalPkgDb allOFiles "Main"
+    (ec, _, err) <- readCreateProcessWithExitCode
+      (P.proc bubblewrap $ sandboxArgs ++ [ghc912] ++ allOFiles ++ ["-o", "Main"]) ""
     when (ec /= ExitSuccess) $
       fail $ "Linking failed: " ++ err
 
     -- Phase 5: Run the binary
-    bwrapRunBinary projectDir tmpBindDir hostPath globalPkgDb "./Main" stdinStr
+    readCreateProcessWithExitCode
+      (P.proc bubblewrap $ sandboxArgs ++ ["./Main"]) stdinStr
 
 -- | Run Haskell source code in a sandboxed environment
 runHaskellInSandbox :: (String, String) -> IO (Either SomeException (ExitCode, String, String))
