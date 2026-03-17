@@ -24,7 +24,7 @@ import System.Exit (ExitCode(..))
 import System.Timeout
 import Control.Exception (try, SomeException, displayException)
 import System.Environment (getEnv)
-import System.Directory (createDirectoryIfMissing, removeFile)
+import System.Directory (createDirectoryIfMissing, listDirectory, removeFile)
 
 import Control.Monad
 
@@ -33,9 +33,12 @@ import Control.Monad
 runghc912 = $(staticWhich "runghc-9.12.2")
 ghc912 = $(staticWhich "ghc-9.12.2")
 bubblewrap = $(staticWhich "bwrap")
+ghcPkg912 = $(staticWhich "ghc-pkg-9.12.2")
+ghcPkg = $(staticWhich "ghc-pkg")
 
-
-nix = $(staticWhich "nix-shell")
+nixShell = $(staticWhich "nix-shell")
+-- Current Result:
+--(ExitFailure 1,"","warning: '/nix' does not exist, so Nix will use '/homeless-shelter/.local/share/nix/root' as a chroot store\nerror: cannot figure out user name\n")
 
 -- nix-shell -p "haskellPackages.ghcWithPackages (ps: with ps; [ temporary vector aeson ])" bubblewrap cabal-install which --run "runghc TestBWrap.hs" --pure
 
@@ -98,8 +101,8 @@ runHaskellInTimedSandbox timeAllowed inputs =
 
 
 -- | Common bwrap sandbox arguments
-bwrapBaseArgs :: FilePath -> FilePath -> String -> [String]
-bwrapBaseArgs projectDir tmpBindDir hostPath =
+bwrapBaseArgs :: FilePath -> FilePath -> String -> String -> [String]
+bwrapBaseArgs projectDir tmpBindDir hostPath globalPkgDb =
   [ "--bind", projectDir, "/project"
   , "--bind", tmpBindDir, "/tmp"
   , "--dev", "/dev"
@@ -107,67 +110,70 @@ bwrapBaseArgs projectDir tmpBindDir hostPath =
   , "--ro-bind", "/nix/store", "/nix/store"
   , "--setenv", "PATH", hostPath
   , "--setenv", "TMPDIR", "/tmp"
+  , "--setenv", "GHC_PACKAGE_PATH", globalPkgDb
   , "--chdir", "/project"
   ]
 
 -- | Compile a single .hs file with ghc -c inside bwrap
-bwrapGhcCompile :: FilePath -> FilePath -> String -> FilePath -> IO (ExitCode, String, String)
-bwrapGhcCompile projectDir tmpBindDir hostPath hsPath =
+bwrapGhcCompile :: FilePath -> FilePath -> String -> String -> FilePath -> IO (ExitCode, String, String)
+bwrapGhcCompile projectDir tmpBindDir hostPath globalPkgDb hsPath =
   readCreateProcessWithExitCode
-    (P.proc bubblewrap $ bwrapBaseArgs projectDir tmpBindDir hostPath
+    (P.proc bubblewrap $ bwrapBaseArgs projectDir tmpBindDir hostPath globalPkgDb
       ++ [ghc912, "-c", hsPath])
     ""
 
 -- | Link .o files into an executable inside bwrap
-bwrapGhcLink :: FilePath -> FilePath -> String -> [FilePath] -> FilePath -> IO (ExitCode, String, String)
-bwrapGhcLink projectDir tmpBindDir hostPath oFiles outputName =
+bwrapGhcLink :: FilePath -> FilePath -> String -> String -> [FilePath] -> FilePath -> IO (ExitCode, String, String)
+bwrapGhcLink projectDir tmpBindDir hostPath globalPkgDb oFiles outputName =
   readCreateProcessWithExitCode
-    (P.proc bubblewrap $ bwrapBaseArgs projectDir tmpBindDir hostPath
+    (P.proc bubblewrap $ bwrapBaseArgs projectDir tmpBindDir hostPath globalPkgDb
       ++ [ghc912] ++ oFiles ++ ["-o", outputName])
     ""
 
 -- | Run a compiled binary inside bwrap
-bwrapRunBinary :: FilePath -> FilePath -> String -> FilePath -> String -> IO (ExitCode, String, String)
-bwrapRunBinary projectDir tmpBindDir hostPath binaryPath stdinStr =
+bwrapRunBinary :: FilePath -> FilePath -> String -> String -> FilePath -> String -> IO (ExitCode, String, String)
+bwrapRunBinary projectDir tmpBindDir hostPath globalPkgDb binaryPath stdinStr =
   readCreateProcessWithExitCode
-    (P.proc bubblewrap $ bwrapBaseArgs projectDir tmpBindDir hostPath
+    (P.proc bubblewrap $ bwrapBaseArgs projectDir tmpBindDir hostPath globalPkgDb
       ++ [binaryPath])
     stdinStr
 
--- | Run an Executable in a sandboxed environment.
--- No TH isolation — all modules are compiled together.
--- Use 'runSandboxedExecutable' for untrusted code.
 runHaskellFilesInSandbox
   :: (Executable, String) -> IO (Either SomeException (ExitCode, String, String))
-runHaskellFilesInSandbox (exe, stdinStr) = try $ do
-  let allModules = _main exe : _library exe
-  let allFolders = takeDirectory . pathSegsToPath ".hs" . getPathSegments <$> allModules
+runHaskellFilesInSandbox (exe, stdin) = try $ do
+  let testModule = _main exe
+  let sourceFiles = _library exe
+  let folders = takeDirectory . pathSegsToPath ".hs" . getPathSegments <$> (testModule : sourceFiles)
+
+  -- trim newline char
+  globalPkgDb <- fmap init $ readProcess ghc912 ["--print-global-package-db"] ""
+
   withSystemTempDirectory "sandbox" $ \tmpDir -> do
     let tmpBindDir = tmpDir </> "tmp"
     createDirectoryIfMissing True tmpBindDir
     let projectDir = tmpDir </> "project"
     let baseDir = projectDir
-    hostPath <- getEnv "PATH"
+    let expectedMainFile = "Main.hs"
 
-    forM_ allFolders $ \fldr ->
+    putStrLn $ "StdIn: " <> stdin
+    forM_ folders $ \fldr -> do
       createDirectoryIfMissing True (baseDir </> fldr)
-    writeLocatedFiles baseDir allModules
-
-    -- Compile library modules first, then Main
-    forM_ (_library exe ++ [_main exe]) $ \m -> do
-      let hsPath = pathSegsToPath ".hs" (getPathSegments m)
-      (ec, _, err) <- bwrapGhcCompile projectDir tmpBindDir hostPath hsPath
-      when (ec /= ExitSuccess) $
-        fail $ "Compilation failed for " ++ hsPath ++ ": " ++ err
-
-    -- Link
-    let allOFiles = [ pathSegsToPath ".o" (getPathSegments m) | m <- allModules ]
-    (ec, _, err) <- bwrapGhcLink projectDir tmpBindDir hostPath allOFiles "Main"
-    when (ec /= ExitSuccess) $
-      fail $ "Linking failed: " ++ err
-
-    -- Run
-    bwrapRunBinary projectDir tmpBindDir hostPath "./Main" stdinStr
+    writeLocatedFiles baseDir (_main exe : _library exe)
+    print =<< listDirectory projectDir
+    hostPath <- getEnv "PATH"
+    let bwrapCmd = P.proc bubblewrap $
+          [ "--bind", projectDir, "/project"
+          , "--bind", tmpBindDir, "/tmp"
+          , "--dev", "/dev"
+          , "--proc", "/proc"
+          , "--ro-bind", "/nix/store", "/nix/store"
+          , "--setenv", "PATH", hostPath
+          , "--setenv", "TMPDIR", "/tmp"
+          , "--setenv", "GHC_PACKAGE_PATH", globalPkgDb
+          , "--chdir", "/project"
+          , runghc912, "-f", ghc912, expectedMainFile
+          ] <> words stdin
+    readCreateProcessWithExitCode bwrapCmd ""
 
 -- | Run a SandboxedExecutable with two-phase compilation to prevent
 -- Template Haskell sandbox escapes.
@@ -184,6 +190,10 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
   let trusted = _library exe
   let allModules = _main exe : untrusted ++ trusted
   let allFolders = takeDirectory . pathSegsToPath ".hs" . getPathSegments <$> allModules
+
+  -- trim newline char
+  globalPkgDb <- fmap init $ readProcess ghc912 ["--print-global-package-db"] ""
+
   withSystemTempDirectory "sandbox" $ \tmpDir -> do
     let tmpBindDir = tmpDir </> "tmp"
     createDirectoryIfMissing True tmpBindDir
@@ -200,7 +210,7 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
     writeLocatedFiles baseDir untrusted
     forM_ untrusted $ \m -> do
       let hsPath = pathSegsToPath ".hs" (getPathSegments m)
-      (ec, _, err) <- bwrapGhcCompile projectDir tmpBindDir hostPath hsPath
+      (ec, _, err) <- bwrapGhcCompile projectDir tmpBindDir hostPath globalPkgDb hsPath
       -- Delete source after compilation, keep .o/.hi
       removeFile (baseDir </> hsPath)
       when (ec /= ExitSuccess) $
@@ -213,37 +223,41 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
     -- Phase 3: Compile trusted modules first, then Main (one-shot, finds untrusted .hi)
     forM_ (trusted ++ [_main exe]) $ \m -> do
       let hsPath = pathSegsToPath ".hs" (getPathSegments m)
-      (ec, _, err) <- bwrapGhcCompile projectDir tmpBindDir hostPath hsPath
+      (ec, _, err) <- bwrapGhcCompile projectDir tmpBindDir hostPath globalPkgDb hsPath
       when (ec /= ExitSuccess) $
         fail $ "Phase 3 compilation failed for " ++ hsPath ++ ": " ++ err
 
     -- Phase 4: Link all .o files into binary
     let allOFiles = [ pathSegsToPath ".o" (getPathSegments m) | m <- allModules ]
-    (ec, _, err) <- bwrapGhcLink projectDir tmpBindDir hostPath allOFiles "Main"
+    (ec, _, err) <- bwrapGhcLink projectDir tmpBindDir hostPath globalPkgDb allOFiles "Main"
     when (ec /= ExitSuccess) $
       fail $ "Linking failed: " ++ err
 
     -- Phase 5: Run the binary
-    bwrapRunBinary projectDir tmpBindDir hostPath "./Main" stdinStr
+    bwrapRunBinary projectDir tmpBindDir hostPath globalPkgDb "./Main" stdinStr
 
--- | Run Haskell source code in a sandboxed environment (single source string)
+-- | Run Haskell source code in a sandboxed environment
 runHaskellInSandbox :: (String, String) -> IO (Either SomeException (ExitCode, String, String))
-runHaskellInSandbox (sourceCode, stdinStr) = try $ do
+runHaskellInSandbox (sourceCode, stdin) = try $ do
   withSystemTempDirectory "sandbox" $ \tmpDir -> do
     let projectDir = tmpDir </> "project"
     let tmpBindDir = tmpDir </> "tmp"
+    putStrLn $ "StdIn: " <> stdin
     createDirectoryIfMissing True projectDir
     createDirectoryIfMissing True tmpBindDir
-    let hsFile = projectDir </> "Main.hs"
+    createDirectoryIfMissing True $ projectDir </> "src"
+    let hsFile = projectDir </> "src" </> "Main.hs"
     writeFile hsFile sourceCode
     hostPath <- getEnv "PATH"
-    -- Compile
-    (ec, _, err) <- bwrapGhcCompile projectDir tmpBindDir hostPath "Main.hs"
-    when (ec /= ExitSuccess) $
-      fail $ "Compilation failed: " ++ err
-    -- Link
-    (ec2, _, err2) <- bwrapGhcLink projectDir tmpBindDir hostPath ["Main.o"] "Main"
-    when (ec2 /= ExitSuccess) $
-      fail $ "Linking failed: " ++ err2
-    -- Run
-    bwrapRunBinary projectDir tmpBindDir hostPath "./Main" stdinStr
+    let bwrapCmd = P.proc bubblewrap $
+          [ "--bind", projectDir, "/project"
+          , "--bind", tmpBindDir, "/tmp"
+          , "--dev", "/dev"
+          , "--proc", "/proc"
+          , "--ro-bind", "/nix/store", "/nix/store"
+          , "--setenv", "PATH", hostPath
+          , "--setenv", "TMPDIR", "/tmp"
+          , "--chdir", "/project"
+          , runghc912, "-f", ghc912, "src/Main.hs"
+          ] <> words stdin
+    readCreateProcessWithExitCode bwrapCmd ""

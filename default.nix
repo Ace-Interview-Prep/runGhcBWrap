@@ -18,7 +18,7 @@ let
   sources = n.mapSubdirectories n.thunkSource ./thunks;
 
   overrides_ = pre: post: {
-    runGhcBWrap-core = runGhcBWrap-core;
+    runGhcBWrap-core = pkgs_unstable.haskell.lib.doJailbreak (post.callCabal2nix "runGhcBWrap-core" sources.runGhcBWrap-core {});
     IStr = pre.callCabal2nix "IStr" sources.IStr {};
     scrappy-core = pre.callCabal2nix "scrappy-core" sources.scrappy-core {};
   };
