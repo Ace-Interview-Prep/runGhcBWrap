@@ -239,6 +239,9 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
 -- | Run Haskell source code in a sandboxed environment
 runHaskellInSandbox :: (String, String) -> IO (Either SomeException (ExitCode, String, String))
 runHaskellInSandbox (sourceCode, stdin) = try $ do
+  -- trim newline char
+  globalPkgDb <- fmap init $ readProcess ghc912 ["--print-global-package-db"] ""
+
   withSystemTempDirectory "sandbox" $ \tmpDir -> do
     let projectDir = tmpDir </> "project"
     let tmpBindDir = tmpDir </> "tmp"
@@ -257,6 +260,7 @@ runHaskellInSandbox (sourceCode, stdin) = try $ do
           , "--ro-bind", "/nix/store", "/nix/store"
           , "--setenv", "PATH", hostPath
           , "--setenv", "TMPDIR", "/tmp"
+          , "--setenv", "GHC_PACKAGE_PATH", globalPkgDb
           , "--chdir", "/project"
           , runghc912, "-f", ghc912, "src/Main.hs"
           ] <> words stdin
