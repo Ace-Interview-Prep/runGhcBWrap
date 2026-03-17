@@ -23,11 +23,14 @@ tests = testGroup "runGhcBWrap"
   [ testGroup "runSandboxedExecutable"
       [ testCase "legitimate code runs correctly" testLegitimateCode
       , testCase "malicious TH readFile cannot read secret" testMaliciousTHReadFile
+      , testCase "TH listDirectory cannot see trusted modules" testTHListDirectory
+      , testCase "TH enumerate and dump all files cannot see secret" testTHEnumerateAndDump
       , testCase "multiple user modules compiled in isolation" testMultipleUserModules
       , testCase "exit code propagated from runtime error" testExitCodePropagation
       ]
   , testGroup "runHaskellFilesInSandbox"
       [ testCase "trusted executable runs correctly" testTrustedExecutable
+      , testCase "Executable type IS vulnerable to TH enumerate+dump" testExecutableVulnerable
       ]
   , testGroup "runHaskellInSandbox"
       [ testCase "simple hello world" testSimpleHelloWorld
@@ -97,6 +100,66 @@ testMaliciousTHReadFile = do
       assertBool "secret not leaked in stdout" (not $ "the secret is" `isInfixOf` stdout)
       assertBool "secret not leaked in stderr" (not $ "the secret is" `isInfixOf` stderr)
 
+-- Test: TH listDirectory during Phase 1 cannot see trusted modules
+-- User module uses TH to list project directory at compile time,
+-- embedding the result as a string. At runtime we verify trusted
+-- module files (SecretSolution.hs, Main.hs) are NOT visible.
+testTHListDirectory :: Assertion
+testTHListDirectory = do
+  let userMod = mkUserModule ["UserModule"] $ unlines
+        [ "{-# LANGUAGE TemplateHaskell #-}"
+        , "module UserModule where"
+        , "import Language.Haskell.TH"
+        , "import System.Directory (listDirectory)"
+        , "visibleFiles :: String"
+        , "visibleFiles = $(do"
+        , "  files <- runIO (listDirectory \".\")"
+        , "  litE (stringL (show files)))"
+        ]
+  let secretMod = mkSystemModule ["SecretSolution"]
+        "answer :: String\nanswer = \"top secret\""
+  let mainMod = mkMainModule
+        "import UserModule\nmain :: IO ()\nmain = putStrLn visibleFiles"
+  let sandboxed = mkSandboxed mainMod [userMod] [secretMod]
+  result <- runSandboxedExecutable (sandboxed, "")
+  case result of
+    Left err -> assertFailure $ "Unexpected error: " ++ show err
+    Right (ec, stdout, _stderr) -> do
+      ec @?= ExitSuccess
+      assertBool "SecretSolution.hs not visible during Phase 1"
+        (not $ "SecretSolution" `isInfixOf` stdout)
+      assertBool "Main.hs not visible during Phase 1"
+        (not $ "Main" `isInfixOf` stdout)
+
+-- Test: TH enumerates all files and reads+prints their contents at compile time.
+-- This is the most aggressive exfiltration attack: listDirectory then readFile everything.
+-- Phase 1 isolation means only the user's own module exists, so no secrets leak.
+testTHEnumerateAndDump :: Assertion
+testTHEnumerateAndDump = do
+  let maliciousMod = mkUserModule ["UserModule"] $ unlines
+        [ "{-# LANGUAGE TemplateHaskell #-}"
+        , "module UserModule where"
+        , "import Control.Monad.IO.Class"
+        , "import Data.Foldable"
+        , "import System.Directory"
+        , "funName :: String -> String"
+        , "funName = $(liftIO (listDirectory \".\" >>= traverse_ (\\x -> putStrLn (x ++ \":\") *> (readFile x >>= print))) *> [| const \"\" |])"
+        ]
+  let secretMod = mkSystemModule ["SecretSolution"]
+        "answer :: String\nanswer = \"the secret is 42\""
+  let mainMod = mkMainModule
+        "import UserModule\nimport SecretSolution\nmain :: IO ()\nmain = putStrLn (funName answer)"
+  let sandboxed = mkSandboxed mainMod [maliciousMod] [secretMod]
+  result <- runSandboxedExecutable (sandboxed, "")
+  case result of
+    Left err -> do
+      let errMsg = show err
+      -- If it fails, the secret must not be in the error message
+      assertBool "secret not leaked in error" (not $ "the secret is 42" `isInfixOf` errMsg)
+    Right (_ec, stdout, stderr) -> do
+      assertBool "secret not leaked in stdout" (not $ "the secret is 42" `isInfixOf` stdout)
+      assertBool "secret not leaked in stderr" (not $ "the secret is 42" `isInfixOf` stderr)
+
 -- Test: multiple user modules are all compiled in isolation
 testMultipleUserModules :: Assertion
 testMultipleUserModules = do
@@ -143,6 +206,33 @@ testTrustedExecutable = do
     Right (ec, stdout, _stderr) -> do
       ec @?= ExitSuccess
       assertBool "stdout correct" ("all trusted" `isInfixOf` stdout)
+
+-- Test: the same TH enumerate+dump attack SUCCEEDS with plain Executable,
+-- proving the vulnerability exists when not using SandboxedExecutable.
+-- All files are written before runghc runs, so TH can read everything.
+testExecutableVulnerable :: Assertion
+testExecutableVulnerable = do
+  let maliciousMod = mkUserModule ["UserModule"] $ unlines
+        [ "{-# LANGUAGE TemplateHaskell #-}"
+        , "module UserModule where"
+        , "import Control.Monad.IO.Class"
+        , "import Data.Foldable"
+        , "import System.Directory"
+        , "funName :: String -> String"
+        , "funName = $(liftIO (listDirectory \".\" >>= traverse_ (\\x -> putStrLn (x ++ \":\") *> (readFile x >>= print))) *> [| const \"\" |])"
+        ]
+  let secretMod = mkSystemModule ["SecretSolution"]
+        "answer :: String\nanswer = \"the secret is 42\""
+  let mainMod = mkSystemModule ["Main"]
+        "import UserModule\nimport SecretSolution\nmain :: IO ()\nmain = putStrLn (funName answer)"
+  let exe = Executable { _main = mainMod, _library = [maliciousMod, secretMod] }
+  result <- runHaskellFilesInSandbox (exe, "")
+  case result of
+    Left err -> assertFailure $ "Unexpected error: " ++ show err
+    Right (_ec, stdout, stderr) -> do
+      let combined = stdout ++ stderr
+      assertBool "secret IS leaked via Executable (proving vulnerability)"
+        ("the secret is 42" `isInfixOf` combined)
 
 -- Test: simple single-source hello world via runHaskellInSandbox
 testSimpleHelloWorld :: Assertion
