@@ -24,7 +24,7 @@ import System.Exit (ExitCode(..))
 import System.Timeout
 import Control.Exception (try, SomeException, displayException)
 import System.Environment (getEnv, getEnvironment)
-import System.Directory (createDirectoryIfMissing, listDirectory, removeFile)
+import System.Directory (createDirectoryIfMissing, listDirectory)
 
 import Control.Monad
 import Data.List (intercalate)
@@ -229,15 +229,16 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
     forM_ allFolders $ \fldr ->
       createDirectoryIfMissing True (baseDir </> fldr)
 
-    -- Phase 1: Write and compile untrusted modules in isolation
-    -- TH splices run here but there are no secret files to read
+    -- Phase 1: Write and compile untrusted modules in isolation.
+    -- TH splices run here but there are no secret/trusted files to read.
+    -- Source is kept (not deleted) so ghc --make can find modules later,
+    -- but .o is newer than .hs so ghc --make will skip recompilation
+    -- (TH does NOT re-execute).
     writeLocatedFiles baseDir untrusted
     forM_ untrusted $ \m -> do
       let hsPath = pathSegsToPath ".hs" (getPathSegments m)
       (ec, _, err) <- readCreateProcessWithExitCode
         (P.proc bubblewrap $ sandboxArgs ++ [ghc912, "-c", hsPath]) ""
-      -- Delete source after compilation, keep .o/.hi
-      removeFile (baseDir </> hsPath)
       when (ec /= ExitSuccess) $
         fail $ "Phase 1 compilation failed for " ++ hsPath ++ ": " ++ err
 
@@ -245,22 +246,18 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
     writeLocatedFiles baseDir [_main exe]
     writeLocatedFiles baseDir trusted
 
-    -- Phase 3: Compile trusted modules first, then Main (one-shot, finds untrusted .hi)
-    forM_ (trusted ++ [_main exe]) $ \m -> do
-      let hsPath = pathSegsToPath ".hs" (getPathSegments m)
-      (ec, _, err) <- readCreateProcessWithExitCode
-        (P.proc bubblewrap $ sandboxArgs ++ [ghc912, "-c", hsPath]) ""
-      when (ec /= ExitSuccess) $
-        fail $ "Phase 3 compilation failed for " ++ hsPath ++ ": " ++ err
-
-    -- Phase 4: Link all .o files into binary
-    let allOFiles = [ pathSegsToPath ".o" (getPathSegments m) | m <- allModules ]
+    -- Phase 3: Compile trusted sources + link in one step.
+    -- ghc --make chases imports from Main.hs, compiles trusted .hs sources,
+    -- skips untrusted modules (already compiled, .o newer than .hs),
+    -- and links with the correct package libraries since it reads
+    -- package deps from .hi files.
+    let mainHsPath = pathSegsToPath ".hs" (getPathSegments (_main exe))
     (ec, _, err) <- readCreateProcessWithExitCode
-      (P.proc bubblewrap $ sandboxArgs ++ [ghc912] ++ allOFiles ++ ["-o", "Main"]) ""
+      (P.proc bubblewrap $ sandboxArgs ++ [ghc912, "--make", mainHsPath, "-o", "Main"]) ""
     when (ec /= ExitSuccess) $
-      fail $ "Linking failed: " ++ err
+      fail $ "Compilation/linking failed: " ++ err
 
-    -- Phase 5: Run the binary
+    -- Phase 4: Run the binary
     readCreateProcessWithExitCode
       (P.proc bubblewrap $ sandboxArgs ++ ["./Main"]) stdinStr
 

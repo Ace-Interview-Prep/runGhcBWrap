@@ -27,6 +27,8 @@ tests = testGroup "runGhcBWrap"
       , testCase "TH enumerate and dump all files cannot see secret" testTHEnumerateAndDump
       , testCase "multiple user modules compiled in isolation" testMultipleUserModules
       , testCase "exit code propagated from runtime error" testExitCodePropagation
+      , testCase "trusted code using external packages (aeson) links correctly" testExternalPackageLinking
+      , testCase "trusted code importing runGhcBWrap-core (TryCodeResult)" testRunGhcBWrapCoreImport
       ]
   , testGroup "runHaskellFilesInSandbox"
       [ testCase "trusted executable runs correctly" testTrustedExecutable
@@ -193,6 +195,56 @@ testExitCodePropagation = do
     Right (ec, _stdout, stderr) -> do
       assertBool "non-zero exit code" (ec /= ExitSuccess)
       assertBool "stderr mentions error" ("kaboom" `isInfixOf` stderr)
+
+-- Test: trusted Main uses external packages (aeson, bytestring).
+-- This reproduces the backend-codechallenges linker failure:
+-- ghc -c finds the packages fine, but ghc .o -o Main doesn't know
+-- which packages to link against.
+testExternalPackageLinking :: Assertion
+testExternalPackageLinking = do
+  let userMod = mkUserModule ["UserModule"]
+        "module UserModule where\nresult :: (Int, Int)\nresult = (1, 2)"
+  let mainMod = mkMainModule $ unlines
+        [ "import UserModule"
+        , "import Data.Aeson (encode)"
+        , "import qualified Data.ByteString.Lazy.Char8 as BL"
+        , "main :: IO ()"
+        , "main = BL.putStrLn (encode result)"
+        ]
+  let sandboxed = mkSandboxed mainMod [userMod] []
+  result <- runSandboxedExecutable (sandboxed, "")
+  case result of
+    Left err -> assertFailure $ "Unexpected error: " ++ show err
+    Right (ec, stdout, _stderr) -> do
+      ec @?= ExitSuccess
+      assertBool "output contains encoded JSON" ("[1,2]" `isInfixOf` stdout)
+
+-- Test: both untrusted (Phase 1) and trusted (Phase 3) can import
+-- runGhcBWrap-core modules. User module uses TryCodeResult in Phase 1,
+-- trusted Main uses it in Phase 3 with aeson encode.
+testRunGhcBWrapCoreImport :: Assertion
+testRunGhcBWrapCoreImport = do
+  let userMod = mkUserModule ["UserModule"] $ unlines
+        [ "module UserModule where"
+        , "import RunGhc.MakeTest (TryCodeResult(..))"
+        , "mkResult :: Int -> Int -> TryCodeResult Int Int"
+        , "mkResult a b = TryCodeResult a b b (a == b)"
+        ]
+  let mainMod = mkMainModule $ unlines
+        [ "import UserModule"
+        , "import RunGhc.MakeTest (TryCodeResult(..))"
+        , "import Data.Aeson (encode)"
+        , "import qualified Data.ByteString.Lazy.Char8 as BL"
+        , "main :: IO ()"
+        , "main = BL.putStrLn (encode (mkResult 1 2))"
+        ]
+  let sandboxed = mkSandboxed mainMod [userMod] []
+  result <- runSandboxedExecutable (sandboxed, "")
+  case result of
+    Left err -> assertFailure $ "Unexpected error: " ++ show err
+    Right (ec, stdout, _stderr) -> do
+      ec @?= ExitSuccess
+      assertBool "output contains TryCodeResult JSON" ("_success" `isInfixOf` stdout)
 
 -- Test: plain Executable (no untrusted separation) still works
 testTrustedExecutable :: Assertion
