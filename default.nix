@@ -1,6 +1,6 @@
 { pkgs, base, data-default, lens, lib, template-haskell, which
 , text, directory, filepath, temporary, process, runGhcBWrap-core
-, tasty, tasty-hunit, mkDerivation
+, tasty, tasty-hunit, mkDerivation, transformers
 , hackludeCabalSrc ? null
 }:
 let
@@ -38,9 +38,10 @@ mkDerivation {
   libraryHaskellDepends = [
     base data-default lens template-haskell text which
     directory filepath temporary process runGhcBWrap-core
+    transformers
   ];
   testHaskellDepends = [
-    tasty tasty-hunit text runGhcBWrap-core
+    tasty tasty-hunit text runGhcBWrap-core transformers
   ];
   buildTools = [ pkgs.cabal-install ];
   librarySystemDepends = [

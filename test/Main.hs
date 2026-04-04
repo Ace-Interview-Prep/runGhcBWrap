@@ -11,6 +11,7 @@ import RunGhc.LocatedModule
 import RunGhc.Locate
 import RunGhc.SystemModule
 
+import Control.Monad.Trans.Except (runExceptT)
 import System.Exit (ExitCode(..))
 import Data.List (isInfixOf)
 import qualified Data.Text as T
@@ -74,7 +75,7 @@ testLegitimateCode = do
   let mainMod = mkMainModule
         "import UserModule\nimport SecretSolution\nmain :: IO ()\nmain = do\n  putStrLn (greet \"world\")\n  putStrLn (answer 42)"
   let sandboxed = mkSandboxed mainMod [userMod] [secretMod]
-  result <- runSandboxedExecutable (sandboxed, "")
+  result <- runExceptT $ runSandboxedExecutable (sandboxed, "")
   case result of
     Left err -> assertFailure $ "Unexpected error: " ++ show err
     Right (ec, stdout, _stderr) -> do
@@ -93,11 +94,11 @@ testMaliciousTHReadFile = do
   let mainMod = mkMainModule
         "import UserModule\nimport SecretSolution\nmain :: IO ()\nmain = putStrLn (answer 42)"
   let sandboxed = mkSandboxed mainMod [maliciousMod] [secretMod]
-  result <- runSandboxedExecutable (sandboxed, "")
+  result <- runExceptT $ runSandboxedExecutable (sandboxed, "")
   case result of
     Left err -> do
       let errMsg = show err
-      assertBool "error mentions compilation failure" ("Phase 1 compilation failed" `isInfixOf` errMsg)
+      assertBool "error mentions compilation failure" ("Stage1Error_ReadUntrusted" `isInfixOf` errMsg)
     Right (_ec, stdout, stderr) -> do
       assertBool "secret not leaked in stdout" (not $ "the secret is" `isInfixOf` stdout)
       assertBool "secret not leaked in stderr" (not $ "the secret is" `isInfixOf` stderr)
@@ -123,7 +124,7 @@ testTHListDirectory = do
   let mainMod = mkMainModule
         "import UserModule\nmain :: IO ()\nmain = putStrLn visibleFiles"
   let sandboxed = mkSandboxed mainMod [userMod] [secretMod]
-  result <- runSandboxedExecutable (sandboxed, "")
+  result <- runExceptT $ runSandboxedExecutable (sandboxed, "")
   case result of
     Left err -> assertFailure $ "Unexpected error: " ++ show err
     Right (ec, stdout, _stderr) -> do
@@ -152,7 +153,7 @@ testTHEnumerateAndDump = do
   let mainMod = mkMainModule
         "import UserModule\nimport SecretSolution\nmain :: IO ()\nmain = putStrLn (funName answer)"
   let sandboxed = mkSandboxed mainMod [maliciousMod] [secretMod]
-  result <- runSandboxedExecutable (sandboxed, "")
+  result <- runExceptT $ runSandboxedExecutable (sandboxed, "")
   case result of
     Left err -> do
       let errMsg = show err
@@ -174,7 +175,7 @@ testMultipleUserModules = do
   let mainMod = mkMainModule
         "import ModA\nimport ModB\nimport SecretSolution\nmain :: IO ()\nmain = putStrLn (answer funcA funcB)"
   let sandboxed = mkSandboxed mainMod [userMod1, userMod2] [secretMod]
-  result <- runSandboxedExecutable (sandboxed, "")
+  result <- runExceptT $ runSandboxedExecutable (sandboxed, "")
   case result of
     Left err -> assertFailure $ "Unexpected error: " ++ show err
     Right (ec, stdout, _stderr) -> do
@@ -189,7 +190,7 @@ testExitCodePropagation = do
   let mainMod = mkMainModule
         "import UserModule\nmain :: IO ()\nmain = putStrLn boom"
   let sandboxed = mkSandboxed mainMod [userMod] []
-  result <- runSandboxedExecutable (sandboxed, "")
+  result <- runExceptT $ runSandboxedExecutable (sandboxed, "")
   case result of
     Left err -> assertFailure $ "Unexpected error: " ++ show err
     Right (ec, _stdout, stderr) -> do
@@ -212,7 +213,7 @@ testExternalPackageLinking = do
         , "main = BL.putStrLn (encode result)"
         ]
   let sandboxed = mkSandboxed mainMod [userMod] []
-  result <- runSandboxedExecutable (sandboxed, "")
+  result <- runExceptT $ runSandboxedExecutable (sandboxed, "")
   case result of
     Left err -> assertFailure $ "Unexpected error: " ++ show err
     Right (ec, stdout, _stderr) -> do
@@ -239,7 +240,7 @@ testRunGhcBWrapCoreImport = do
         , "main = BL.putStrLn (encode (mkResult 1 2))"
         ]
   let sandboxed = mkSandboxed mainMod [userMod] []
-  result <- runSandboxedExecutable (sandboxed, "")
+  result <- runExceptT $ runSandboxedExecutable (sandboxed, "")
   case result of
     Left err -> assertFailure $ "Unexpected error: " ++ show err
     Right (ec, stdout, _stderr) -> do

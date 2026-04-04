@@ -10,6 +10,7 @@ library
       base
     , text
     , which
+    , transformers
     , directory
     , filepath
     , process
@@ -31,3 +32,4 @@ test-suite tests
     , tasty
     , tasty-hunit
     , text
+    , transformers

@@ -10,6 +10,7 @@ module RunGhcBWrap
   , testRunGhcBWrap
   , splitOnNewline
   , splitOnBar
+  , RunGhcError(..)
   ) where
 
 import RunGhc.Executable
@@ -22,12 +23,15 @@ import System.IO.Temp (withSystemTempDirectory)
 import System.FilePath ((</>), takeDirectory)
 import System.Exit (ExitCode(..))
 import System.Timeout
+import Control.Monad.Trans.Except
+import Control.Monad.IO.Class (liftIO)
 import Control.Exception (try, SomeException, displayException)
 import System.Environment (getEnv, getEnvironment)
 import System.Directory (createDirectoryIfMissing, listDirectory)
 
 import Control.Monad
 import Data.List (intercalate)
+import qualified Data.Text as T 
 
 -- runghc = $(staticWhich "runghc")
 -- ghc = $(staticWhich "ghc")
@@ -184,8 +188,8 @@ runHaskellFilesInSandbox (exe, stdin) = try $ do
 -- Phase 2: Write trusted modules + Main
 -- Phase 3: Compile trusted modules + link + run
 runSandboxedExecutable
-  :: (SandboxedExecutable, String) -> IO (Either SomeException (ExitCode, String, String))
-runSandboxedExecutable (sandboxed, stdinStr) = try $ do
+  :: (SandboxedExecutable, String) -> ExceptT RunGhcError IO (ExitCode, String, String)
+runSandboxedExecutable (sandboxed, stdinStr) = do
   let exe = _sandboxedExe sandboxed
   let untrusted = _untrustedModules sandboxed
   let trusted = _library exe
@@ -199,19 +203,19 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
   -- (e.g. /build/tmp.xxx/) that isn't mounted inside bwrap.
   -- Clear GHC_PACKAGE_PATH before running ghc-pkg so it doesn't inherit
   -- the parent env's GHC 8.10 package db (incompatible format with 9.12)
-  env <- getEnvironment
+  env <- liftIO getEnvironment
   let env' = filter ((/= "GHC_PACKAGE_PATH") . fst) env
-  pkgListOutput <- readCreateProcess
+  pkgListOutput <- liftIO $ readCreateProcess
     (P.proc ghcPkg912 ["list"]) { env = Just env' } ""
-  let pkgDbs = [line | line <- lines pkgListOutput, not (null line), head line == '/']
+  let pkgDbs = [line | line <- lines pkgListOutput, not (null line), safeHead line == Just '/']
   let ghcPackagePath = intercalate ":" pkgDbs
 
-  withSystemTempDirectory "sandbox" $ \tmpDir -> do
+  ExceptT $ withSystemTempDirectory "sandbox" $ \tmpDir -> runExceptT $ do
     let tmpBindDir = tmpDir </> "tmp"
-    createDirectoryIfMissing True tmpBindDir
+    liftIO $ createDirectoryIfMissing True tmpBindDir
     let projectDir = tmpDir </> "project"
     let baseDir = projectDir
-    hostPath <- getEnv "PATH"
+    hostPath <- liftIO $ getEnv "PATH"
 
     let sandboxArgs =
           [ "--bind", projectDir, "/project"
@@ -226,7 +230,7 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
           ]
 
     -- Create directory structure for all modules upfront
-    forM_ allFolders $ \fldr ->
+    liftIO $ forM_ allFolders $ \fldr ->
       createDirectoryIfMissing True (baseDir </> fldr)
 
     -- Phase 1: Write and compile untrusted modules in isolation.
@@ -234,17 +238,18 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
     -- Source is kept (not deleted) so ghc --make can find modules later,
     -- but .o is newer than .hs so ghc --make will skip recompilation
     -- (TH does NOT re-execute).
-    writeLocatedFiles baseDir untrusted
+    liftIO $ writeLocatedFiles baseDir untrusted
     forM_ untrusted $ \m -> do
       let hsPath = pathSegsToPath ".hs" (getPathSegments m)
-      (ec, _, err) <- readCreateProcessWithExitCode
+      (ec, _, err) <- liftIO $ readCreateProcessWithExitCode
         (P.proc bubblewrap $ sandboxArgs ++ [ghc912, "-c", hsPath]) ""
       when (ec /= ExitSuccess) $
-        fail $ "Phase 1 compilation failed for " ++ hsPath ++ ": " ++ err
+        throwE $ Stage1Error_ReadUntrusted $ T.pack err
+        -- T.pack $ "Phase 1 compilation failed for " ++ hsPath ++ ": " ++ err
 
     -- Phase 2: Write trusted modules + Main
-    writeLocatedFiles baseDir [_main exe]
-    writeLocatedFiles baseDir trusted
+    liftIO $ writeLocatedFiles baseDir [_main exe]
+    liftIO $ writeLocatedFiles baseDir trusted
 
     -- Phase 3: Compile trusted sources + link in one step.
     -- ghc --make chases imports from Main.hs, compiles trusted .hs sources,
@@ -252,14 +257,52 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ do
     -- and links with the correct package libraries since it reads
     -- package deps from .hi files.
     let mainHsPath = pathSegsToPath ".hs" (getPathSegments (_main exe))
-    (ec, _, err) <- readCreateProcessWithExitCode
+    (ec, _, err) <- liftIO $ readCreateProcessWithExitCode
       (P.proc bubblewrap $ sandboxArgs ++ [ghc912, "--make", mainHsPath, "-o", "Main"]) ""
     when (ec /= ExitSuccess) $
-      fail $ "Compilation/linking failed: " ++ err
+      throwE $ Stage2Error_Link $ T.pack err
 
     -- Phase 4: Run the binary
-    readCreateProcessWithExitCode
+    liftIO $ readCreateProcessWithExitCode
       (P.proc bubblewrap $ sandboxArgs ++ ["./Main"]) stdinStr
+
+
+
+-- runghc
+--
+-- User Input
+-- """
+-- module Hask where
+
+-- f :: Int -> Int -> Int
+-- """
+
+data RunGhcError
+  = Stage1Error_ReadUntrusted T.Text
+  | Stage2Error_Link T.Text
+  | Unexpected T.Text
+  deriving (Show)
+
+safeHead :: [a] -> Maybe a
+safeHead [] = Nothing
+safeHead (x:_) = Just x
+
+-- | Lift an IO action into ExceptT, catching SomeException as RunGhcError
+-- tryIO :: IO a -> ExceptT RunGhcError IO a
+-- tryIO act = do
+--   r <- liftIO $ try act
+--   case r of
+--     Left (e :: SomeException) -> throwE $ RunGhcError $ T.pack $ displayException e
+--     Right a -> pure a
+
+-- data RunGhcError 
+--   = ParseError
+--   | TypeError T.Text
+--   | NoInstanceFor T.Text -- ~type error
+--   | UnsupportedExtension T.Text
+--   | Unrecognized SomeException
+  
+
 
 -- | Run Haskell source code in a sandboxed environment
 runHaskellInSandbox :: (String, String) -> IO (Either SomeException (ExitCode, String, String))
