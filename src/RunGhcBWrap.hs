@@ -16,7 +16,7 @@ module RunGhcBWrap
 import RunGhc.Executable
 import RunGhc.LocatedModule
 import RunGhc.Locate
-import RunGhc.UserInput (RunGhcError)
+import RunGhc.UserInput (RunGhcError(..))
 
 import System.Which
 import System.Process as P
