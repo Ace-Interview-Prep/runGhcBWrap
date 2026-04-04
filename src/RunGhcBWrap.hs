@@ -188,8 +188,8 @@ runHaskellFilesInSandbox (exe, stdin) = try $ do
 -- Phase 2: Write trusted modules + Main
 -- Phase 3: Compile trusted modules + link + run
 runSandboxedExecutable
-  :: (SandboxedExecutable, String) -> ExceptT RunGhcError IO (ExitCode, String, String)
-runSandboxedExecutable (sandboxed, stdinStr) = do
+  :: (SandboxedExecutable, String) -> IO (Either SomeException (Either RunGhcError (ExitCode, String, String)))
+runSandboxedExecutable (sandboxed, stdinStr) = try $ runExceptT $ do
   let exe = _sandboxedExe sandboxed
   let untrusted = _untrustedModules sandboxed
   let trusted = _library exe

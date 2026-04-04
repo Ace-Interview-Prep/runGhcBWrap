@@ -11,7 +11,6 @@ import RunGhc.LocatedModule
 import RunGhc.Locate
 import RunGhc.SystemModule
 
-import Control.Monad.Trans.Except (runExceptT)
 import System.Exit (ExitCode(..))
 import Data.List (isInfixOf)
 import qualified Data.Text as T
@@ -75,10 +74,11 @@ testLegitimateCode = do
   let mainMod = mkMainModule
         "import UserModule\nimport SecretSolution\nmain :: IO ()\nmain = do\n  putStrLn (greet \"world\")\n  putStrLn (answer 42)"
   let sandboxed = mkSandboxed mainMod [userMod] [secretMod]
-  result <- runExceptT $ runSandboxedExecutable (sandboxed, "")
+  result <- runSandboxedExecutable (sandboxed, "")
   case result of
-    Left err -> assertFailure $ "Unexpected error: " ++ show err
-    Right (ec, stdout, _stderr) -> do
+    Left exc -> assertFailure $ "Unexpected exception: " ++ show exc
+    Right (Left err) -> assertFailure $ "Unexpected error: " ++ show err
+    Right (Right (ec, stdout, _stderr)) -> do
       ec @?= ExitSuccess
       assertBool "stdout contains greeting" ("Hello, world!" `isInfixOf` stdout)
       assertBool "stdout contains answer" ("secret:42" `isInfixOf` stdout)
@@ -94,12 +94,13 @@ testMaliciousTHReadFile = do
   let mainMod = mkMainModule
         "import UserModule\nimport SecretSolution\nmain :: IO ()\nmain = putStrLn (answer 42)"
   let sandboxed = mkSandboxed mainMod [maliciousMod] [secretMod]
-  result <- runExceptT $ runSandboxedExecutable (sandboxed, "")
+  result <- runSandboxedExecutable (sandboxed, "")
   case result of
-    Left err -> do
+    Left exc -> assertFailure $ "Unexpected exception: " ++ show exc
+    Right (Left err) -> do
       let errMsg = show err
       assertBool "error mentions compilation failure" ("Stage1Error_ReadUntrusted" `isInfixOf` errMsg)
-    Right (_ec, stdout, stderr) -> do
+    Right (Right (_ec, stdout, stderr)) -> do
       assertBool "secret not leaked in stdout" (not $ "the secret is" `isInfixOf` stdout)
       assertBool "secret not leaked in stderr" (not $ "the secret is" `isInfixOf` stderr)
 
@@ -124,10 +125,11 @@ testTHListDirectory = do
   let mainMod = mkMainModule
         "import UserModule\nmain :: IO ()\nmain = putStrLn visibleFiles"
   let sandboxed = mkSandboxed mainMod [userMod] [secretMod]
-  result <- runExceptT $ runSandboxedExecutable (sandboxed, "")
+  result <- runSandboxedExecutable (sandboxed, "")
   case result of
-    Left err -> assertFailure $ "Unexpected error: " ++ show err
-    Right (ec, stdout, _stderr) -> do
+    Left exc -> assertFailure $ "Unexpected exception: " ++ show exc
+    Right (Left err) -> assertFailure $ "Unexpected error: " ++ show err
+    Right (Right (ec, stdout, _stderr)) -> do
       ec @?= ExitSuccess
       assertBool "SecretSolution.hs not visible during Phase 1"
         (not $ "SecretSolution" `isInfixOf` stdout)
@@ -153,13 +155,14 @@ testTHEnumerateAndDump = do
   let mainMod = mkMainModule
         "import UserModule\nimport SecretSolution\nmain :: IO ()\nmain = putStrLn (funName answer)"
   let sandboxed = mkSandboxed mainMod [maliciousMod] [secretMod]
-  result <- runExceptT $ runSandboxedExecutable (sandboxed, "")
+  result <- runSandboxedExecutable (sandboxed, "")
   case result of
-    Left err -> do
+    Left exc -> assertFailure $ "Unexpected exception: " ++ show exc
+    Right (Left err) -> do
       let errMsg = show err
       -- If it fails, the secret must not be in the error message
       assertBool "secret not leaked in error" (not $ "the secret is 42" `isInfixOf` errMsg)
-    Right (_ec, stdout, stderr) -> do
+    Right (Right (_ec, stdout, stderr)) -> do
       assertBool "secret not leaked in stdout" (not $ "the secret is 42" `isInfixOf` stdout)
       assertBool "secret not leaked in stderr" (not $ "the secret is 42" `isInfixOf` stderr)
 
@@ -175,10 +178,11 @@ testMultipleUserModules = do
   let mainMod = mkMainModule
         "import ModA\nimport ModB\nimport SecretSolution\nmain :: IO ()\nmain = putStrLn (answer funcA funcB)"
   let sandboxed = mkSandboxed mainMod [userMod1, userMod2] [secretMod]
-  result <- runExceptT $ runSandboxedExecutable (sandboxed, "")
+  result <- runSandboxedExecutable (sandboxed, "")
   case result of
-    Left err -> assertFailure $ "Unexpected error: " ++ show err
-    Right (ec, stdout, _stderr) -> do
+    Left exc -> assertFailure $ "Unexpected exception: " ++ show exc
+    Right (Left err) -> assertFailure $ "Unexpected error: " ++ show err
+    Right (Right (ec, stdout, _stderr)) -> do
       ec @?= ExitSuccess
       assertBool "correct result" ("result:30" `isInfixOf` stdout)
 
@@ -190,10 +194,11 @@ testExitCodePropagation = do
   let mainMod = mkMainModule
         "import UserModule\nmain :: IO ()\nmain = putStrLn boom"
   let sandboxed = mkSandboxed mainMod [userMod] []
-  result <- runExceptT $ runSandboxedExecutable (sandboxed, "")
+  result <- runSandboxedExecutable (sandboxed, "")
   case result of
-    Left err -> assertFailure $ "Unexpected error: " ++ show err
-    Right (ec, _stdout, stderr) -> do
+    Left exc -> assertFailure $ "Unexpected exception: " ++ show exc
+    Right (Left err) -> assertFailure $ "Unexpected error: " ++ show err
+    Right (Right (ec, _stdout, stderr)) -> do
       assertBool "non-zero exit code" (ec /= ExitSuccess)
       assertBool "stderr mentions error" ("kaboom" `isInfixOf` stderr)
 
@@ -213,10 +218,11 @@ testExternalPackageLinking = do
         , "main = BL.putStrLn (encode result)"
         ]
   let sandboxed = mkSandboxed mainMod [userMod] []
-  result <- runExceptT $ runSandboxedExecutable (sandboxed, "")
+  result <- runSandboxedExecutable (sandboxed, "")
   case result of
-    Left err -> assertFailure $ "Unexpected error: " ++ show err
-    Right (ec, stdout, _stderr) -> do
+    Left exc -> assertFailure $ "Unexpected exception: " ++ show exc
+    Right (Left err) -> assertFailure $ "Unexpected error: " ++ show err
+    Right (Right (ec, stdout, _stderr)) -> do
       ec @?= ExitSuccess
       assertBool "output contains encoded JSON" ("[1,2]" `isInfixOf` stdout)
 
@@ -240,10 +246,11 @@ testRunGhcBWrapCoreImport = do
         , "main = BL.putStrLn (encode (mkResult 1 2))"
         ]
   let sandboxed = mkSandboxed mainMod [userMod] []
-  result <- runExceptT $ runSandboxedExecutable (sandboxed, "")
+  result <- runSandboxedExecutable (sandboxed, "")
   case result of
-    Left err -> assertFailure $ "Unexpected error: " ++ show err
-    Right (ec, stdout, _stderr) -> do
+    Left exc -> assertFailure $ "Unexpected exception: " ++ show exc
+    Right (Left err) -> assertFailure $ "Unexpected error: " ++ show err
+    Right (Right (ec, stdout, _stderr)) -> do
       ec @?= ExitSuccess
       assertBool "output contains TryCodeResult JSON" ("_success" `isInfixOf` stdout)
 
