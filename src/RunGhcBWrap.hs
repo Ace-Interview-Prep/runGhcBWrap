@@ -16,6 +16,7 @@ module RunGhcBWrap
 import RunGhc.Executable
 import RunGhc.LocatedModule
 import RunGhc.Locate
+import RunGhc.UserInput (RunGhcError)
 
 import System.Which
 import System.Process as P
@@ -276,12 +277,6 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ runExceptT $ do
 
 -- f :: Int -> Int -> Int
 -- """
-
-data RunGhcError
-  = Stage1Error_ReadUntrusted T.Text
-  | Stage2Error_Link T.Text
-  | Unexpected T.Text
-  deriving (Show)
 
 safeHead :: [a] -> Maybe a
 safeHead [] = Nothing
