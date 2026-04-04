@@ -109,7 +109,8 @@ runHaskellInTimedSandbox timeAllowed inputs =
 -- | Common bwrap sandbox arguments
 bwrapBaseArgs :: FilePath -> FilePath -> String -> String -> [String]
 bwrapBaseArgs projectDir tmpBindDir hostPath globalPkgDb =
-  [ "--bind", projectDir, "/project"
+  [ "--die-with-parent"
+  , "--bind", projectDir, "/project"
   , "--bind", tmpBindDir, "/tmp"
   , "--dev", "/dev"
   , "--proc", "/proc"
@@ -168,7 +169,8 @@ runHaskellFilesInSandbox (exe, stdin) = try $ do
     print =<< listDirectory projectDir
     hostPath <- getEnv "PATH"
     let bwrapCmd = P.proc bubblewrap $
-          [ "--bind", projectDir, "/project"
+          [ "--die-with-parent"
+          , "--bind", projectDir, "/project"
           , "--bind", tmpBindDir, "/tmp"
           , "--dev", "/dev"
           , "--proc", "/proc"
@@ -219,7 +221,8 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ runExceptT $ do
     hostPath <- liftIO $ getEnv "PATH"
 
     let sandboxArgs =
-          [ "--bind", projectDir, "/project"
+          [ "--die-with-parent"
+          , "--bind", projectDir, "/project"
           , "--bind", tmpBindDir, "/tmp"
           , "--dev", "/dev"
           , "--proc", "/proc"
