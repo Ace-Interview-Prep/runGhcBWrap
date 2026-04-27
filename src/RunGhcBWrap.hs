@@ -28,7 +28,7 @@ import Control.Monad.Trans.Except
 import Control.Monad.IO.Class (liftIO)
 import Control.Exception (try, SomeException, displayException)
 import System.Environment (getEnv, getEnvironment)
-import System.Directory (createDirectoryIfMissing, listDirectory)
+import System.Directory (createDirectoryIfMissing, listDirectory, removeFile)
 
 import Control.Monad
 import Data.List (intercalate)
@@ -265,6 +265,10 @@ runSandboxedExecutable (sandboxed, stdinStr) = try $ runExceptT $ do
       (P.proc bubblewrap $ sandboxArgs ++ [ghc912, "--make", mainHsPath, "-o", "Main"]) ""
     when (ec /= ExitSuccess) $
       throwE $ Stage2Error_Link $ T.pack err
+
+    -- Phase 3.5: Delete all .hs source files so they cannot be read at runtime
+    liftIO $ forM_ allModules $ \m ->
+      removeFile (baseDir </> pathSegsToPath ".hs" (getPathSegments m))
 
     -- Phase 4: Run the binary
     liftIO $ readCreateProcessWithExitCode

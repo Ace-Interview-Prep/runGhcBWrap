@@ -29,6 +29,7 @@ tests = testGroup "runGhcBWrap"
       , testCase "exit code propagated from runtime error" testExitCodePropagation
       , testCase "trusted code using external packages (aeson) links correctly" testExternalPackageLinking
       , testCase "trusted code importing runGhcBWrap-core (TryCodeResult)" testRunGhcBWrapCoreImport
+      , testCase "runtime unsafePerformIO cannot find solution source files" testRuntimeCannotFindSource
       ]
   , testGroup "runHaskellFilesInSandbox"
       [ testCase "trusted executable runs correctly" testTrustedExecutable
@@ -253,6 +254,57 @@ testRunGhcBWrapCoreImport = do
     Right (Right (ec, stdout, _stderr)) -> do
       ec @?= ExitSuccess
       assertBool "output contains TryCodeResult JSON" ("_success" `isInfixOf` stdout)
+
+-- Test: user code uses unsafePerformIO at runtime to list directory and read files.
+-- After Phase 3.5, all .hs source files should be deleted, so reading them fails.
+testRuntimeCannotFindSource :: Assertion
+testRuntimeCannotFindSource = do
+  let userMod = mkUserModule ["UserModule"] $ unlines
+        [ "module UserModule where"
+        , "import System.IO.Unsafe (unsafePerformIO)"
+        , "import System.Directory (listDirectory, doesFileExist)"
+        , "import Control.Exception (try, SomeException)"
+        , "import Data.List (isInfixOf)"
+        , ""
+        , "exfiltrate :: IO String"
+        , "exfiltrate = do"
+        , "  files <- listDirectory \".\""
+        , "  let hsFiles = filter (isInfixOf \".hs\") files"
+        , "  contents <- mapM (\\f -> do"
+        , "    r <- try (readFile f) :: IO (Either SomeException String)"
+        , "    case r of"
+        , "      Left e -> return (f ++ \": ERROR\")"
+        , "      Right c -> return (f ++ \": \" ++ c)"
+        , "    ) hsFiles"
+        , "  return (unlines (\"FILES:\" : files ++ \"CONTENTS:\" : contents))"
+        ]
+  let secretMod = mkSystemModule ["SecretSolution"]
+        "answer :: String\nanswer = \"the secret is 42\""
+  let mainMod = mkMainModule $ unlines
+        [ "import UserModule"
+        , "import SecretSolution"
+        , "main :: IO ()"
+        , "main = do"
+        , "  dump <- exfiltrate"
+        , "  putStrLn dump"
+        , "  putStrLn (answer)"
+        ]
+  let sandboxed = mkSandboxed mainMod [userMod] [secretMod]
+  result <- runSandboxedExecutable (sandboxed, "")
+  case result of
+    Left exc -> assertFailure $ "Unexpected exception: " ++ show exc
+    Right (Left err) -> assertFailure $ "Unexpected error: " ++ show err
+    Right (Right (ec, stdout, _stderr)) -> do
+      ec @?= ExitSuccess
+      -- The secret answer should still work (binary is linked)
+      assertBool "program still runs correctly" ("the secret is 42" `isInfixOf` stdout)
+      -- But no .hs files should be visible or readable
+      assertBool "no .hs files visible at runtime"
+        (not $ "SecretSolution.hs" `isInfixOf` stdout)
+      assertBool "no Main.hs visible at runtime"
+        (not $ "Main.hs" `isInfixOf` stdout)
+      assertBool "no UserModule.hs visible at runtime"
+        (not $ "UserModule.hs" `isInfixOf` stdout)
 
 -- Test: plain Executable (no untrusted separation) still works
 testTrustedExecutable :: Assertion
